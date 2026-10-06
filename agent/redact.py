@@ -1206,6 +1206,21 @@ def _redact_strict_url_credentials(text: str) -> str:
     return _STRICT_URL_USERINFO_RE.sub("//***:***@", text)
 
 
+def redact_log_urls(text: str) -> str:
+    """Mask credential-named query params and URL userinfo in log-bound text.
+
+    A log file is a persistence boundary, not a live tool flow: magic-link /
+    OAuth-callback URLs only need their non-secret parts to survive on disk, so
+    the log path opts into the strict URL redactors that
+    ``redact_sensitive_text`` deliberately leaves off for live flows. Without
+    it, a remote MCP server configured as ``https://mcp.example.com/mcp?token=…``
+    lands its API key on every log line that mentions the URL (issue #133713).
+    """
+    if not text or "://" not in text:
+        return text
+    return _redact_strict_url_credentials(text)
+
+
 def redact_cdp_url(value: object) -> str:
     """Mask secrets in a CDP/browser endpoint URL before it is logged.
 
@@ -1921,11 +1936,12 @@ class RedactingFormatter(logging.Formatter):
         safe_record = copy.copy(record)
         safe_record.msg = _LOG_UNSAFE_CHARS.sub(" ", redact_sensitive_text(record.getMessage()))
         safe_record.args = None
-        formatted = redact_sensitive_text(super().format(safe_record))
+        formatted = redact_log_urls(redact_sensitive_text(super().format(safe_record)))
         # aiohttp's access line carries the raw request target, and webhook platforms that cannot
         # send headers authenticate in the query string (BlueBubbles ``?password=``). An adapter's
         # own ``access_log=None`` does not reach the shared listener that serves multiplexed
-        # profiles (#143550), so credential params are masked on every Hermes log handler.
+        # profiles (#143550), so credential params are masked on every Hermes log handler. Its target
+        # is relative (no ``://``), which redact_log_urls above skips.
         if record.name == "aiohttp.access":
             formatted = _redact_strict_url_credentials(formatted)
         first, *rest = _EXC_UNSAFE_CHARS.sub(" ", formatted).split("\n")
