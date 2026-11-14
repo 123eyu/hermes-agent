@@ -25,6 +25,7 @@ from agent.redact_headers import (
     redact_header_credentials,
 )
 from agent.redact_pattern_shape import _pattern_structure
+from agent.redact_spaced_cfg import redact_spaced_cfg_assignments
 
 logger = logging.getLogger(__name__)
 
@@ -322,6 +323,7 @@ _ENV_ASSIGN_LOWER_RE = re.compile(
 # whitespace AND ``&`` (form bodies go pair-by-pair via _redact_form_body);
 # _CFG_DOTTED_RE needs a NAMESPACED key; _CFG_ANCHORED_RE needs line start
 # (optionally after ``export``). The ``://`` URL guard lives at the call site.
+# The spaced ``key = value`` form is code-shaped too, so it has its own gate: agent/redact_spaced_cfg.py.
 # The uppercase _ENV_ASSIGN_RE above never matched these, so config-file passwords leaked verbatim (issue
 # #16413). These run only in a config-file context, NOT in prose, code, or URLs — three carve-outs preserved
 # from the original design (#4367 + the documented web-URL passthrough below): 1. The value is bounded by
@@ -1420,6 +1422,8 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
     mask = _mask_token_nonreusable if mask_nonreusable else _mask_token
     if "=" in text:
         text = redact_cookie_assignments(text, mask)
+        if "://" not in text and _CFG_SECRET_WORD_RE.search(text):  # before the ENV passes: their ``\S+``
+            text = redact_spaced_cfg_assignments(text, mask)        # value stops at a quoted value's space
         _redact_env = _assignment_sub(lambda g: f"{g[0]}={g[1]}{mask(g[2])}{g[1]}", check_keyword=True)
         text = _ENV_ASSIGN_RE.sub(_redact_env, text)
         if "://" not in text:  # lowercase names would match URL params
@@ -1440,6 +1444,7 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
         if "://" not in text and _CFG_SECRET_WORD_RE.search(text):
             text = _CFG_DOTTED_RE.sub(_redact_env, text)
             text = _CFG_ANCHORED_RE.sub(_redact_env, text)
+            text = redact_spaced_cfg_assignments(text, mask)
 
     if ":" in text and '"' in text:
         for pattern in (_SECRET_HEADER_JSON_RE, _COOKIE_HEADER_JSON_RE):
