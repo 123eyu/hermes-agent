@@ -154,3 +154,24 @@ def test_look_alikes_are_not_denied(isolated_home, monkeypatch):
     _write_profile_config(isolated_home / "hermes", monkeypatch)
     assert all(_is_provider_env_blocklisted(n) for n in DECLARED)
     assert not any(_is_provider_env_blocklisted(n) for n in OPERATOR_VARS)
+
+
+def test_declaring_a_key_mid_session_drops_it_from_the_live_snapshot(isolated_home, monkeypatch):
+    """A terminal session whose snapshot captured the key before the declaration stops exporting it."""
+    home = isolated_home / "hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    config = home / "config.yaml"
+    config.write_text("model:\n  provider: theta\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv(DECLARED[0], SECRET)
+    env = local.LocalEnvironment(cwd=str(isolated_home), timeout=30)
+    try:
+        assert SECRET in Path(env._snapshot_path).read_text(encoding="utf-8")  # captured while undeclared
+        # A declared value that is no shell name must not reach the wrapper script.
+        config.write_text(f"model:\n  provider: theta\n  key_env: {DECLARED[0]}\n"
+                          "custom_providers:\n  - name: odd\n    key_env: \"x}; exit 7; #\"\n", encoding="utf-8")
+        os.utime(config, ns=(1, 1))
+        assert observe_terminal(env, [DECLARED[0]]) == {DECLARED[0]: None}
+        assert SECRET not in Path(env._snapshot_path).read_text(encoding="utf-8")
+    finally:
+        env.cleanup()

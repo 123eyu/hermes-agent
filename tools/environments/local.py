@@ -18,7 +18,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from hermes_constants import get_process_hermes_home
-from tools.environments.base import BaseEnvironment
+from tools.environments.base import BaseEnvironment, _SHELL_ENV_NAME_RE
 from tools.environments.base_output import _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.process_identity import own_process_groups, release_process_groups
@@ -1127,9 +1127,11 @@ class LocalEnvironment(BaseEnvironment):
             if isinstance(name, str) and _matches_terminal_first_party_prefix(name)))
 
     def _snapshot_excluded_passthrough_names(self) -> tuple[str, ...]:
-        """Plus the plugins' session env names: each command gets its own session's values."""
+        """Plus the plugins' session env names: each command gets its own session's values. Plus the
+        config-declared key holders: a key the snapshot captured before its declaration stays out."""
         from hermes_cli.plugins_session_env import session_env_names
-        return tuple(sorted({*super()._snapshot_excluded_passthrough_names(), *session_env_names()}))
+        declared = (n for n in _home_declared_key_env() if _SHELL_ENV_NAME_RE.fullmatch(n))
+        return tuple(sorted({*super()._snapshot_excluded_passthrough_names(), *session_env_names(), *declared}))
 
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict | None = None, persistent: bool = True):
         super().__init__(cwd=_resolve_local_initial_cwd(cwd), timeout=timeout, env=env, persist_env=persistent)
