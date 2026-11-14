@@ -3041,7 +3041,7 @@ def _try_anthropic(explicit_api_key: Optional[str | Callable[[], str]] = None,
         base_url = override_url
     from hermes_cli.runtime_provider import anthropic_foundry_key  # Foundry: never the OAuth token (#154242)
     if explicit_api_key or base_url_host_matches(base_url, "azure.com"):
-        token = explicit_api_key or anthropic_foundry_key(entry, model_cfg, base_url)
+        token = explicit_api_key or anthropic_foundry_key(model_cfg, base_url, requested_model or model)
     else:  # pool absent/empty: legacy resolver so a dead entry can't wedge aux
         token = _pool_runtime_api_key(entry) if entry is not None else resolve_anthropic_token()
     if not token:

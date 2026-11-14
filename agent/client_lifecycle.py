@@ -956,6 +956,11 @@ class ClientLifecycleMixin:
         if not route_can_serve_model(getattr(self, "provider", None), stripped_base, getattr(self, "model", None)):
             logger.info("Credential %s skipped: its route cannot serve model %s", getattr(entry, "id", "?"), self.model)
             return False
+        if getattr(self, "provider", None) == "anthropic" and base_url_host_matches(str(stripped_base or ""), "azure.com"):
+            from hermes_cli.runtime_provider import anthropic_foundry_entry_ok
+            if not anthropic_foundry_entry_ok(entry, stripped_base):  # an OAuth/unbound row never reaches Foundry (#154242)
+                logger.info("Credential %s skipped: not a key bound to this Foundry endpoint", getattr(entry, "id", "?"))
+                return False
         if actual_route:
             self.api_mode = "chat_completions"
             if hasattr(self, "_transport_cache"):
