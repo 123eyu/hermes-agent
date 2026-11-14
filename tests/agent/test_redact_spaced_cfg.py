@@ -61,6 +61,33 @@ def test_spaced_source_code_unchanged(line):
     assert redact_for_egress(text) == text
 
 
+def test_spaced_separator_masked_in_dotted_quoted_and_export_forms():
+    """INI/TOML files align values with spaces around ``=``; only the adjacent
+    spelling was masked (the #16413 gap extended to ``password = x``)."""
+    text = (
+        "db.password = Sup3rS3cret!\n"
+        "password = \"An0therS3cret!\"\n"
+        "export password = Th1rdS3cret!\n"
+    )
+    result = redact_sensitive_text(text)
+    assert "Sup3rS3cret!" not in result
+    assert "An0therS3cret!" not in result
+    assert "Th1rdS3cret!" not in result
+    assert "db.password" in result  # keys preserved
+
+
+def test_prose_mid_sentence_spaced_equals_unchanged():
+    # Not line-anchored, not dotted: conversational text, leave alone (#4367).
+    text = "I have password = foo and other things"
+    assert redact_sensitive_text(text) == text
+
+
+def test_spaced_equality_comparison_unchanged():
+    # ``==`` is a comparison, not an assignment; spacing tolerance must not mask it.
+    text = "password == expected\nassert cfg.password == other\n"
+    assert redact_sensitive_text(text) == text
+
+
 @pytest.mark.parametrize("text", [
     "password" * 1500 + "." * 1500 + " = ",  # `[..]*NAME[..]*` keys backtracked per start offset
     "a." + "password" * 6000 + " = ",
