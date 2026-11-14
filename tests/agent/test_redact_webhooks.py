@@ -138,6 +138,11 @@ class TestWebhookUrlShapes:
         for out in (redact_sensitive_text(url), redact_sensitive_text(url, file_read=True)):
             assert self.SECRET[6:-4] not in out
             assert "/A02BCDEFG/412345678901234567/" in out
+            # RedactingFormatter redacts twice: the second pass must not take the public id
+            assert redact_sensitive_text(out) == out
+        # A trailing slash after a services secret is still masked.
+        out = redact_sensitive_text("https://hooks.slack.com/services/T0123ABCD/B0123ABCD/" + self.SECRET + "/")
+        assert self.SECRET[6:-4] not in out
 
     @pytest.mark.parametrize("prefix", [
         "https://hooks.slack.com.:443/services/T0123ABCD/B0123ABCD/",

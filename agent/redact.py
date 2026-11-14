@@ -749,7 +749,9 @@ _URL_BARE_TOKEN_RE = re.compile(
 # adapters, so these land in config dumps, tool output and logs. Telegram's is already covered
 # by _TELEGRAM_RE, which masks the bot token inside its API URL. ``http://`` is matched too: a
 # mistyped scheme still carries the same secret in the path. Slack Workflow Builder URLs carry a
-# numeric id before the secret (workflows/T/A/<id>/<secret>), so that form is tried first.
+# numeric id before the secret (workflows/T/A/<id>/<secret>), so that form is tried first; the
+# generic arm skips an all-digit segment followed by ``/`` so a second pass (RedactingFormatter
+# redacts twice) leaves that public id readable.
 # Every repeat in the Teams Workflows arm is capped: it is retried at each URL start, and the
 # uncapped prefix/path runs overlapped, which made repeated URLs cubic (50 KB took ~48 s).
 _WEBHOOK_HOST_END = r"\.?(?::\d+)?/"  # trailing-dot FQDN and explicit port reach the same host
@@ -757,7 +759,7 @@ _WEBHOOK_URL_RE = re.compile(
     r"(https?://hooks\.slack(?:-gov)?\.com" + _WEBHOOK_HOST_END
     + r"workflows/[A-Z0-9]+/[A-Z0-9]+/\d+/)([A-Za-z0-9]{8,})"
     r"|(https?://hooks\.slack(?:-gov)?\.com" + _WEBHOOK_HOST_END
-    + r"(?:services|workflows|triggers)/[A-Z0-9]+/[A-Z0-9]+/)([A-Za-z0-9]{8,})"
+    + r"(?:services|workflows|triggers)/[A-Z0-9]+/[A-Z0-9]+/)(?!\d+/)([A-Za-z0-9]{8,})"
     r"|(https?://(?:canary\.|ptb\.|www\.)?discord(?:app)?\.com" + _WEBHOOK_HOST_END
     + r"api/(?:v\d+/)?webhooks/\d+/)([\w-]{8,})"
     r"|(https?://[A-Za-z0-9.-]*\.?(?:webhook\.office\.com" + _WEBHOOK_HOST_END
