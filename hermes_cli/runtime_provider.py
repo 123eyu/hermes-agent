@@ -1025,6 +1025,15 @@ def anthropic_foundry_key(model_cfg: Any, base_url: str, model: Optional[str] = 
     return _azure_anthropic_env_key(cfg)
 
 
+def anthropic_discovery_token(api_key: Optional[str], base_url: Optional[str]) -> Optional[str]:
+    """Key for an Anthropic ``/v1/models`` read: the caller's, else at an Azure Foundry host the
+    Foundry key (None when there is none: send nothing, #154242), else ``resolve_anthropic_token()``."""
+    if (key := str(api_key or "").strip()) or not base_url_host_matches(str(base_url or ""), "azure.com"):
+        from agent.anthropic_credentials import resolve_anthropic_token
+        return key or resolve_anthropic_token() or ""
+    return anthropic_foundry_key(_get_model_config(), str(base_url)) or None
+
+
 def _anthropic_env_runtime(requested_provider: str, model_cfg: dict[str, Any], target_model: str | None = None) -> dict[str, Any]:
     """Native Anthropic (Messages API) from env/auth store; ``model.base_url`` honoured only when
     the configured provider is anthropic (else a Codex endpoint would leak into Anthropic requests)."""
