@@ -3,7 +3,9 @@ masks credential-named query values and URL userinfo that live tool flows delibe
 
 import logging
 
-from agent.redact import RedactingFormatter
+import pytest
+
+from agent.redact import RedactingFormatter, redact_sensitive_text
 
 
 def _format(message: str) -> str:
@@ -67,3 +69,16 @@ def test_quoted_url_keeps_its_closing_apostrophe():
     line = _format("url='https://mcp.example/mcp?token=" + "SECRET" + "value123' next")
     assert "SECRETvalue123" not in line
     assert line.endswith("?token=***' next")
+
+
+@pytest.mark.parametrize("before, after", [
+    ("get('https://a.example/v1?key={s}')", "get('https://a.example/v1?key=***')"),
+    ("['https://a.example/x?token={s}', 'https://b.example/y']", "['https://a.example/x?token=***', 'https://b.example/y']"),
+    ("u = 'https://a.example/x?token={s}'.strip()", "u = 'https://a.example/x?token=***'.strip()"),
+])
+def test_closing_quote_before_punctuation_survives_the_mask(before, after):
+    # The strict pass is shared with every egress caller (context compression, cron errors), so
+    # only the credential goes: the quote and the code after it stay.
+    secret = "abcdef" + "123456"
+    out = redact_sensitive_text(before.format(s=secret), force=True, redact_url_credentials=True)
+    assert out == after
