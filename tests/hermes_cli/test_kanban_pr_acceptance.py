@@ -313,6 +313,26 @@ def test_gh_env_keeps_the_assignee_profiles_own_proxy(tmp_path, monkeypatch):
     assert env["GH_CONFIG_DIR"] == str(assignee_home / "gh")
 
 
+@pytest.mark.platforms("posix")
+def test_gh_env_empty_transport_var_in_assignee_env_clears_the_inherited_one(tmp_path, monkeypatch):
+    """``NO_PROXY=`` in the assignee's .env clears a shell-wide ``NO_PROXY=*`` (else gh would bypass
+    the assignee's proxy); an empty login key still is no login, so the pin fires."""
+    from hermes_cli.kanban_pr_acceptance import _gh_env
+
+    launch_home = tmp_path / "home"
+    launch_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    monkeypatch.setenv("NO_PROXY", "*")
+    assignee_home = launch_home / "profiles" / "b"
+    assignee_home.mkdir(parents=True)
+    (assignee_home / ".env").write_text("GH_TOKEN=\nHTTPS_PROXY=http://corp-proxy:3128\nNO_PROXY=\n",
+                                        encoding="utf-8")
+
+    env = _gh_env(str(assignee_home)) or {}
+    assert env["HTTPS_PROXY"] == "http://corp-proxy:3128" and env["NO_PROXY"] == ""
+    assert "GH_TOKEN" not in env and env["GH_CONFIG_DIR"] == str(assignee_home / "gh")
+
+
 def test_assigned_card_with_unresolvable_profile_is_auth_not_ambient(tmp_path, monkeypatch):
     """A card assigned to a profile that no longer exists must not run gh as the completing
     process's ambient login: classification `auth` naming the profile, gh never invoked."""

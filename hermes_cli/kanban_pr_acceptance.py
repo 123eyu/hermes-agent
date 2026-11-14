@@ -111,9 +111,8 @@ def _gh_env(profile_home: str | None) -> dict[str, str] | None:
             base.pop(key, None)
     env = served_profile_child_env(base=base, target_home=profile_home, inherit_credentials=False)
     scope = build_profile_secret_scope(Path(profile_home))
-    for key in _GH_GITHUB_LOGIN_KEYS + _GH_TRANSPORT_KEYS:
-        if scope.get(key):
-            env[key] = scope[key]
+    env.update((key, scope[key]) for key in _GH_GITHUB_LOGIN_KEYS if scope.get(key))
+    env.update((key, scope[key]) for key in _GH_TRANSPORT_KEYS if key in scope)  # NO_PROXY= clears
     if routed and not (env.keys() & set(_GH_GITHUB_LOGIN_KEYS)):
         # HOME/XDG_CONFIG_HOME are still the launch process's: without a login of its own the
         # child would fall through to ~/.config/gh/hosts.yml — the ambient login. Pin gh's config
