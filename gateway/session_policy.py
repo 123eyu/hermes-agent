@@ -705,9 +705,11 @@ def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False, b
         dropped = _unnamed_extension_toolsets(explicit, requested, config) & enabled
         enabled -= dropped
         # ``hermes-api-server`` expands into built-in names; keep one an MCP server or plugin shares (``web``) when
-        # the pick needs its built-in tools, as naming it would, instead of refusing the pick.
+        # the pick needs its built-in tools and asked for all of them, instead of refusing the pick. A wider name
+        # (a plugin key called ``coding``) would grant tools the pick never asked for.
         missing = requested - {t for name in enabled for t in resolve_toolset(name)}
-        enabled |= {n for n in dropped & set(TOOLSETS) if missing & set(resolve_toolset(n, include_registry=False))}
+        static = {n: set(resolve_toolset(n, include_registry=False)) for n in dropped & set(TOOLSETS)}
+        enabled |= {n for n, tools in static.items() if tools & missing and tools <= requested}
         effective = {t for name in enabled for t in resolve_toolset(name)}
         if not requested <= effective:
             _refuse('toolsets', f"not available on this surface: {', '.join(sorted(requested - effective))}")

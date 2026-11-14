@@ -72,6 +72,16 @@ def test_a_composite_keeps_a_builtin_that_a_server_is_named_like(tmp_path, pick)
     assert _toolsets(tmp_path, cfg, ['session_search']) == {'session_search'}
 
 
+@pytest.mark.parametrize('pick', ['hermes-api-server', 'hermes-webhook'])
+def test_a_wider_plugin_key_is_not_put_back_for_a_composite(tmp_path, builtin_named_plugin_keys, pick):
+    # The ``coding`` key also holds web_search, but putting it back would add terminal and file tools.
+    cfg = {**builtin_named_plugin_keys, 'mcp_servers': {'web': {'command': str(tmp_path / 'absent')}}}
+    toolsets = _toolsets(tmp_path, cfg, [pick])
+    assert 'web' in toolsets and 'coding' not in toolsets, toolsets
+    # A pick that already has web through ``coding`` puts nothing back, so the server stays out.
+    assert 'web' not in _toolsets(tmp_path, cfg, ['coding'])
+
+
 def test_a_pick_covering_a_builtin_named_plugin_key_keeps_it(tmp_path, builtin_named_plugin_keys):
     # ``coding`` already holds delegate_task, so the ``delegation`` key adds nothing the pick did not grant.
     assert _toolsets(tmp_path, builtin_named_plugin_keys, ['coding']) == {'coding', 'delegation'}
