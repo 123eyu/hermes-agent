@@ -860,8 +860,53 @@ def _is_basic_pair_password(password: str) -> bool:
 # Form-urlencoded body: only when the ENTIRE text is a k=v&k=v string.
 _FORM_BODY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*=[^&\s]*(?:&[A-Za-z_][A-Za-z0-9_.-]*=[^&\s]*)+$")
 
+
+def _last_char_class(pattern: str) -> "str | None":
+    """Text of the last ``[...]`` class in ``pattern`` (escape-aware), or None.
+
+    For the built-in shape ``<literal prefix><body class><quantifier>`` this is the
+    pattern's body class.
+    """
+    last = None
+    i = 0
+    while i < len(pattern):
+        if pattern[i] == "\\":
+            i += 2
+            continue
+        if pattern[i] == "[":
+            j = i + 1
+            if pattern[j:j + 1] == "^":
+                j += 1
+            if pattern[j:j + 1] == "]":  # a leading "]" is literal
+                j += 1
+            while j < len(pattern) and pattern[j] != "]":
+                j += 2 if pattern[j] == "\\" else 1
+            last = pattern[i:j + 1]
+            i = j + 1
+            continue
+        i += 1
+    return last
+
+
+def _trailing_guard(pattern: str) -> str:
+    """Lookahead ending ``pattern``: reject a following alphanumeric (word boundary), and ``_``/``-``
+    only when the pattern's body class admits them. Never stricter than the shared guard, so a
+    plugin pattern whose last class is a delimiter check (``(?=[\\s.,])``) still matches."""
+    body_class = _last_char_class(pattern)
+    try:  # a "[" inside a (?#...) comment is no class: fall back to the shared guard
+        seps = "".join(c for c in "_-" if re.fullmatch(body_class, c)) if body_class else None
+    except re.error:
+        seps = None
+    return r"(?![A-Za-z0-9_-])" if seps is None else f"(?![A-Za-z0-9{seps}])"
+
+
 def _compile_prefix_matcher(patterns: list) -> re.Pattern[str]:
-    return re.compile(r"(?<![A-Za-z0-9_-])(" + "|".join(patterns) + r")(?![A-Za-z0-9_-])")
+    # Each branch gets its own guard (_trailing_guard): a following alphanumeric always
+    # blocks, ``_``/``-`` only when the body class admits them. The old shared
+    # ``(?![A-Za-z0-9_-])`` failed ``ghp_…[A-Za-z0-9]{10,}`` at the body's end and at every
+    # backtrack step, so a token followed by ``_``/``-`` was missed and shipped in cleartext
+    # (#142852). A pattern without a ``[...]`` class falls back to the shared class.
+    return re.compile(r"(?<![A-Za-z0-9_-])(" + "|".join(f"(?:{p}){_trailing_guard(p)}" for p in patterns) + r")")
 
 
 def _compile_prefix_sub_matcher(patterns: list) -> re.Pattern[str]:
@@ -875,9 +920,9 @@ def _compile_prefix_sub_matcher(patterns: list) -> re.Pattern[str]:
     # Groups are disjoint by first char, so leftmost-first match order is unchanged.
     by_first: dict = {}
     for pattern in patterns:
-        by_first.setdefault(pattern[0], []).append(pattern[1:])
+        by_first.setdefault(pattern[0], []).append(f"(?:{pattern[1:]}){_trailing_guard(pattern)}")
     body = "|".join(f"{re.escape(c)}(?:{'|'.join(rest)})" for c, rest in by_first.items())
-    return re.compile(r"(?<![A-Za-z0-9])(" + body + r")(?![A-Za-z0-9_-])")
+    return re.compile(r"(?<![A-Za-z0-9])(" + body + r")")
 
 
 _PREFIX_RE = _compile_prefix_matcher(_PREFIX_PATTERNS)
