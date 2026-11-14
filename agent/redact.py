@@ -1325,6 +1325,8 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
     mask = _mask_token_nonreusable if mask_nonreusable else _mask_token
     if "=" in text:
         text = redact_cookie_assignments(text, mask)
+        if "://" not in text and _CFG_SECRET_WORD_RE.search(text):  # before the ENV passes: their ``\S+``
+            text = redact_spaced_cfg_assignments(text, mask)        # value stops at a quoted value's space
         _redact_env = _assignment_sub(lambda g: f"{g[0]}={g[1]}{mask(g[2])}{g[1]}", check_keyword=True)
         text = _ENV_ASSIGN_RE.sub(_redact_env, text)
         if "://" not in text:  # lowercase names would match URL params
