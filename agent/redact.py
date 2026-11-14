@@ -101,6 +101,7 @@ _SENSITIVE_QUERY_PARAMS = frozenset({
     "client_secret", "password", "auth", "jwt", "session", "secret", "key",
     "code", "signature", "x-amz-signature",
     "x-goog-signature", "sig",  # GCS V4 signed URLs, Azure SAS tokens
+    "usertoken",  # Penpot MCP: the key can only travel as ``?userToken=`` (#133713)
 })
 
 # Snapshot at import time so runtime env mutations (e.g. an LLM-generated
@@ -756,8 +757,10 @@ _URL_USERINFO_RE = re.compile(r"(https?|wss?|ftp)://([^/\s:@]+):([^/\s@]+)@")
 
 # Strict provider-egress URL redaction: delimiters stay in capture groups so the
 # query/fragment layout is preserved byte-for-byte; the key is decoded
-# separately for classification. Values stop at ``&``/``;`` (both valid).
-_STRICT_URL_PARAM_RE = re.compile(r"([?#&;])([A-Za-z0-9_.~+%\-]+)=([^#&;\s\"'<>]*)")
+# separately for classification. Values stop at ``&``/``;`` (both valid). An apostrophe
+# followed by a token character is part of the value (``?token=abc'tail``); one followed by
+# anything else closes a quoted URL (``'…?token=abc')``, ``',``, ``'.strip()``) and stays.
+_STRICT_URL_PARAM_RE = re.compile(r"([?#&;])([A-Za-z0-9_.~+%\-]+)=([^#&;\s\"'<>]*(?:'[A-Za-z0-9_~+%\-][^#&;\s\"'<>]*)*)")
 
 # Userinfo in absolute and network-path (``//user:pass@host``) references; the
 # authority stops at path/query/fragment delimiters. Anchored on the mandatory
@@ -1204,6 +1207,21 @@ def _redact_strict_url_credentials(text: str) -> str:
         lambda m: f"{m.group(1)}{m.group(2)}=***"
         if _canonical_url_param_name(m.group(2)) in _SENSITIVE_QUERY_PARAMS else m.group(0), text)
     return _STRICT_URL_USERINFO_RE.sub("//***:***@", text)
+
+
+def redact_log_urls(text: str) -> str:
+    """Mask credential-named query params and URL userinfo in log-bound text.
+
+    A log file is a persistence boundary, not a live tool flow: magic-link /
+    OAuth-callback URLs only need their non-secret parts to survive on disk, so
+    the log path opts into the strict URL redactors that
+    ``redact_sensitive_text`` deliberately leaves off for live flows. Without
+    it, a remote MCP server configured as ``https://mcp.example.com/mcp?token=…``
+    lands its API key on every log line that mentions the URL (issue #133713).
+    """
+    if not text or "://" not in text or not _redact_enabled():
+        return text
+    return _redact_strict_url_credentials(text)
 
 
 def redact_cdp_url(value: object) -> str:
@@ -1950,11 +1968,12 @@ class RedactingFormatter(logging.Formatter):
         safe_record = copy.copy(record)
         safe_record.msg = _LOG_UNSAFE_CHARS.sub(" ", redact_sensitive_text(record.getMessage()))
         safe_record.args = None
-        formatted = redact_sensitive_text(super().format(safe_record))
+        formatted = redact_log_urls(redact_sensitive_text(super().format(safe_record)))
         # aiohttp's access line carries the raw request target, and webhook platforms that cannot
         # send headers authenticate in the query string (BlueBubbles ``?password=``). An adapter's
         # own ``access_log=None`` does not reach the shared listener that serves multiplexed
-        # profiles (#143550), so credential params are masked on every Hermes log handler.
+        # profiles (#143550), so credential params are masked on every Hermes log handler. Its target
+        # is relative (no ``://``), which redact_log_urls above skips.
         if record.name == "aiohttp.access":
             formatted = _redact_strict_url_credentials(formatted)
         first, *rest = _EXC_UNSAFE_CHARS.sub(" ", formatted).split("\n")
