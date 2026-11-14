@@ -709,8 +709,9 @@ DANGEROUS_PATTERNS = [
     # `-o` takes the rest of a short-flag cluster as its value (`-ofoo` is push option "foo").
     (rf'{_GIT_PUSH}{_GIT_PUSH_ARGS}{_GIT_PUSH_ARG_START}-(?!-)[a-np-z]*f[a-z]*\b',
      "git force push short flag (rewrites remote history)"),
-    # A push option's value (`-o +foo`) is not a refspec.
-    (rf'{_GIT_PUSH}{_GIT_PUSH_ARGS}(?<!\s-o)(?<!\s--push-option){_GIT_PUSH_ARG_START}\+[^\s;&|\n]+',
+    # A push option's value (`-o +foo`) is not a refspec; the scan ends on a non-blank so the
+    # whole blank run sits between the option and its value (`-o  +foo`).
+    (rf'{_GIT_PUSH}{_GIT_PUSH_ARGS}(?<!\s)(?<!\s-o)(?<!\s--push-option)\s+["\']?\+[^\s;&|\n]+',
      "git force push (rewrites remote history)"),
     (rf'{_GIT}clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
     # `-D` = `-d --force`: only the capital short flag is force-delete, so the group opts out of
