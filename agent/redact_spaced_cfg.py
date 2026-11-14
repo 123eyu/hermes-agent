@@ -27,12 +27,13 @@ def _patterns() -> tuple["re.Pattern[str]", ...]:
     # Keys are one possessive run checked by _key_names_secret: the key must reach the separator, so
     # the run is the only candidate, and `[..]*NAME[..]*` backtracking is superlinear on long runs.
     value = rf"{_SPACED_SEP}(?:{_QUOTED}|{_UNQUOTED})"
+    sp = r"(?<=[Aa][Pp][Ii]) (?=[Kk][Ee][Yy])"  # _SECRET_CFG_NAMES' ``api key``: the only space a key holds
     dotted = re.compile(
-        rf"(?<![A-Za-z0-9_.\-])(?P<key>(?P<name>[A-Za-z0-9_\-]*+\.[A-Za-z0-9_.\-]*+)){value}",
+        rf"(?<![A-Za-z0-9_.\-])(?!(?<=[Aa][Pp][Ii] )[Kk][Ee][Yy])(?P<key>(?P<name>(?:[A-Za-z0-9_\-]|{sp})*+\.(?:[A-Za-z0-9_.\-]|{sp})*+)){value}",
         re.MULTILINE,
     )
     anchored = re.compile(
-        rf"(?P<key>^[ \t]*{_LINE_NUMBER_GUTTER}(?:export[ \t]+)?(?P<name>[A-Za-z0-9_.\-]++)){value}",
+        rf"(?P<key>^[ \t]*{_LINE_NUMBER_GUTTER}(?:export[ \t]+)?(?P<name>(?:[A-Za-z0-9_.\-]|{sp})++)){value}",
         re.IGNORECASE | re.MULTILINE,
     )
     return dotted, anchored
@@ -44,19 +45,15 @@ def _key_names_secret(name: str, dotted: bool) -> bool:
     a non-empty first segment, or before a later dot that is not the last character."""
     from agent.redact import _CFG_SECRET_WORD_RE
 
-    if not dotted:
-        return bool(_bare_key_re().fullmatch(name))
+    if not dotted:  # only ``api.key`` / ``api key`` puts a non-word character in a bare key
+        seps = [i for i, c in enumerate(name) if c in ". "]
+        if seps and (len(seps) > 1 or name[max(seps[0] - 3, 0):seps[0]].lower() != "api"
+                     or name[seps[0] + 1:seps[0] + 4].lower() != "key"):
+            return False  # checked directly: a fullmatch backtracks per keyword on ``password…password.``
+        return bool(_CFG_SECRET_WORD_RE.search(name))
     first_dot, last_dot = name.find("."), name.rfind(".", 0, len(name) - 1)
     return bool((first_dot > 0 and _CFG_SECRET_WORD_RE.search(name, first_dot + 1))
                 or (last_dot > 0 and _CFG_SECRET_WORD_RE.search(name, 0, last_dot)))
-
-
-@functools.cache
-def _bare_key_re() -> "re.Pattern[str]":
-    # One fixed start (fullmatch), so the keyword backtrack is linear in the key, not per offset.
-    from agent.redact import _SECRET_CFG_NAMES
-
-    return re.compile(rf"[A-Za-z0-9_\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_\-]*", re.IGNORECASE)
 
 
 def _is_code_expression(key: str, value: str) -> bool:

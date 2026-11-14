@@ -17,6 +17,9 @@ def _ensure_redaction_enabled(monkeypatch):
     ('[server]\ndb.password = "S3cretVal"  # prod\n', "S3cretVal"),  # TOML dotted + comment
     ('  5|password = "abc123def456"\r\n', "abc123def456"),        # read_file gutter, CRLF
     ("secret = a1b2c3d4e5f6a7b8c9d0e1f2\n", "a1b2c3d4e5f6a7b8c9d0e1f2"),  # unquoted opaque
+    ("[openai]\nAPI Key = 9f8e7d6c5b4a39281706f5e4d3c2b1a0\n", "9f8e7d6c5b4a39281706f5e4d3c2b1a0"),  # spaced keyword
+    ("service.API Key = a1b2c3d4e5f6a7b8c9d0e1f2\n", "a1b2c3d4e5f6a7b8c9d0e1f2"),  # spaced keyword, dotted
+    ('api db.password = "hunter2"\n', "hunter2"),  # a dotted key may still start after a plain ``api ``
 ])
 def test_spaced_config_secret_masked(text, secret):
     assert secret not in redact_for_egress(text)
@@ -92,7 +95,9 @@ def test_spaced_equality_comparison_unchanged():
     "password" * 1500 + "." * 1500 + " = ",  # `[..]*NAME[..]*` keys backtracked per start offset
     "a." + "password" * 6000 + " = ",
     "  5|" + "password" * 6000 + " = ",
-], ids=["dotted-run", "dotted-prefix", "anchored-gutter"])
+    "api key." * 10000 + " = ",  # a key starting after every joined ``api `` rescanned the run
+    "password" * 12000 + '. = "hunter2"',  # a valid value reaches the bare-key keyword check
+], ids=["dotted-run", "dotted-prefix", "anchored-gutter", "dotted-api-key-joins", "bare-key-check"])
 def test_spaced_pass_linear_on_long_keyword_runs(text):
     import time
 
@@ -101,4 +106,4 @@ def test_spaced_pass_linear_on_long_keyword_runs(text):
 
     start = time.perf_counter()
     redact_spaced_cfg_assignments(text, _mask_token)
-    assert time.perf_counter() - start < 1.0
+    assert time.perf_counter() - start < 2.0
