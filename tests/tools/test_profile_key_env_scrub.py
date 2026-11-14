@@ -175,3 +175,18 @@ def test_declaring_a_key_mid_session_drops_it_from_the_live_snapshot(isolated_ho
         assert SECRET not in Path(env._snapshot_path).read_text(encoding="utf-8")
     finally:
         env.cleanup()
+
+
+def test_expanded_key_env_pointer_is_denied(isolated_home, monkeypatch):
+    """``key_env: "${KEY_SLOT}"`` is read after expansion: the key sits under KEY_SLOT's value."""
+    home = isolated_home / "hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text("model:\n  provider: theta\n  key_env: \"${KEY_SLOT}\"\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("KEY_SLOT", DECLARED[1])
+    monkeypatch.setenv(DECLARED[1], SECRET)
+    assert DECLARED[1] not in local._sanitize_subprocess_env(dict(os.environ))
+    monkeypatch.setenv("KEY_SLOT", DECLARED[0])  # repointed without a config edit
+    monkeypatch.setenv(DECLARED[0], SECRET)
+    child = local._sanitize_subprocess_env(dict(os.environ))
+    assert DECLARED[0] not in child and child.get(DECLARED[1]) == SECRET

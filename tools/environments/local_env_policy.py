@@ -214,16 +214,29 @@ def _home_declared_key_env() -> frozenset:
     key = hermes_home_key()
     raw = read_raw_config_readonly()
     cached = _HOME_DECLARED_KEY_ENV_CACHE.get(key)
-    if cached is not None and cached[0] is raw:
-        return cached[1]
-    failed = isinstance(raw, FailedConfigRead)
-    source = (load_newest_good_backup(get_config_path()) or {}) if failed else raw
-    source = {k: v for k, v in source.items() if k != "mcp_servers"}
-    names = frozenset(n.upper() for n in _config_declared_key_envs(source) | _config_credential_env_refs(source))
-    if failed and cached is not None:
-        names |= cached[1]
-    _HOME_DECLARED_KEY_ENV_CACHE[key] = (None if failed else raw, names)
-    return names
+    if cached is None or cached[0] is not raw:
+        failed = isinstance(raw, FailedConfigRead)
+        source = (load_newest_good_backup(get_config_path()) or {}) if failed else raw
+        source = {k: v for k, v in source.items() if k != "mcp_servers"}
+        pointers = _config_declared_key_envs(source)
+        names = frozenset(n.upper() for n in pointers | _config_credential_env_refs(source))
+        templates = frozenset(p for p in pointers if "${" in p)
+        if failed and cached is not None:
+            names, templates = names | cached[1], templates | cached[2]
+        cached = _HOME_DECLARED_KEY_ENV_CACHE[key] = (None if failed else raw, names, templates)
+    return cached[1] | _expanded_key_env_pointers(cached[2])
+
+
+def _expanded_key_env_pointers(templates: frozenset) -> frozenset:
+    """The names ``key_env: "${KEY_SLOT}"``-style pointers name once the config loader expands them:
+    the provider reads the expanded name, not the literal. Expanded on every call, not cached on the
+    file signature, because the referenced value can change without the file changing."""
+    if not templates:
+        return frozenset()
+    from hermes_cli.config import _expand_env_vars
+
+    expanded = (str(_expand_env_vars(t)).strip() for t in templates)
+    return frozenset(n.upper() for n in expanded if n and "${" not in n)
 
 
 def _is_provider_env_blocklisted(name: str, _registered: frozenset | None = None) -> bool:
