@@ -128,3 +128,43 @@ def test_server_in_no_config_source_fails_closed(session, caplog):
         assert _write_call_asks()
     session.call_tool.assert_not_awaited()
     assert any("server not in config" in r.getMessage() for r in caplog.records)
+
+
+def test_explicit_null_trust_keeps_the_registration_default(session):
+    """``trust: null`` registers as ``full``; the fallback must normalize it the same way, not as 'not found'."""
+    _configure(None)
+    config = json.loads((get_hermes_home() / "config.yaml").read_text())
+    config["mcp_servers"]["srv"]["trust"] = None
+    (get_hermes_home() / "config.yaml").write_text(json.dumps(config))
+    assert _mcp_registration._normalize_server_trust(None) == mcp_tool._TRUST_FULL
+    assert not _write_call_asks()
+    session.call_tool.assert_awaited_once()
+
+
+@pytest.fixture
+def managed_dir(tmp_path, monkeypatch):
+    from hermes_cli.managed_scope import invalidate_managed_cache
+    path = tmp_path / "managed"
+    path.mkdir()
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(path))
+    invalidate_managed_cache()
+    yield path
+    invalidate_managed_cache()
+
+
+def test_managed_untrusted_overlay_is_gated(session, managed_dir):
+    _configure(None)
+    (managed_dir / "config.yaml").write_text(json.dumps({"mcp_servers": {"srv": {"trust": "untrusted"}}}))
+    assert _write_call_asks()
+    session.call_tool.assert_not_awaited()
+
+
+def test_malformed_managed_overlay_fails_closed(session, managed_dir, caplog):
+    """The native entry omits ``trust`` (→ full), but the admin overlay could be pinning ``untrusted``:
+    an unreadable overlay must not read as 'no override'."""
+    _configure(None)
+    (managed_dir / "config.yaml").write_text("mcp_servers:\n  srv: {trust: untrusted\n  [")
+    with caplog.at_level(logging.WARNING, logger=_mcp_handlers.logger.name):
+        assert _write_call_asks()
+    session.call_tool.assert_not_awaited()
+    assert any("config read failed" in r.getMessage() for r in caplog.records)

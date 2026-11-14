@@ -122,13 +122,15 @@ def _format_trust_gate_arguments(args: dict) -> str:
 
 
 _NO_TRUST_KEY = object()
+_NOT_CONFIGURED = object()
 
 
 def _raw_server_entry_trust(server_name: str, home) -> Any:
     """The raw ``trust`` value of *server_name*'s entry in *home*'s config: managed overlay, then native
     ``mcp_servers``, then a plugin-declared server (registration's precedence). ``_NO_TRUST_KEY`` for an
-    entry without one, ``None`` when no source has the server. No ``${VAR}`` expansion: the tier needs no
-    secret, and an unscoped multiplex expansion raises. Read errors propagate."""
+    entry without one, ``_NOT_CONFIGURED`` when no source has the server. No ``${VAR}`` expansion: the tier
+    needs no secret, and an unscoped multiplex expansion raises. Read errors (managed overlay included)
+    propagate."""
     from hermes_cli.config_backend import read_config_doc_readonly
     from hermes_cli.managed_scope import load_managed_config
     from hermes_constants import get_hermes_home, hermes_home_key
@@ -141,7 +143,7 @@ def _raw_server_entry_trust(server_name: str, home) -> Any:
         native = entry(read_config_doc_readonly(home / "config.yaml"))
     except FileNotFoundError:
         native = None
-    managed = entry(load_managed_config())
+    managed = entry(load_managed_config(strict=True))  # a lost admin ``trust: untrusted`` must not read as absent
     if isinstance(managed, dict) and "trust" in managed:
         return managed["trust"]
     if isinstance(native, dict) or isinstance(managed, dict):
@@ -152,7 +154,7 @@ def _raw_server_entry_trust(server_name: str, home) -> Any:
         portable = get_plugin_manager().get_portable_mcp_servers().get(server_name)
         if isinstance(portable, dict):
             return portable.get("trust", _NO_TRUST_KEY)
-    return None
+    return _NOT_CONFIGURED
 
 
 def _configured_trust(server_name: str, key) -> str:
@@ -172,7 +174,7 @@ def _configured_trust(server_name: str, key) -> str:
     except Exception as exc:  # health: allow BLE001 -- any read failure fails closed; the warning names it
         trust, source = _core._TRUST_UNTRUSTED, f"config read failed ({type(exc).__name__})"
     else:
-        if raw is None:
+        if raw is _NOT_CONFIGURED:
             trust, source = _core._TRUST_UNTRUSTED, "server not in config"
         elif raw is _NO_TRUST_KEY:
             trust, source = _core._TRUST_FULL, "config entry has no trust key"
@@ -198,8 +200,8 @@ def _trust_gate_check(server_name: str, tool_name: str, booked: Optional[list] =
         trust = _configured_trust(server_name, key)
     gated = trust == _core._TRUST_UNTRUSTED and not _tool_is_read_only(server_name, tool_name)
     if gated and _trust_granted(server_name, tool_name):
-        logger.info("MCP trust gate: '%s' on untrusted server '%s' (key %r) ran on a remembered grant or "
-                    "approval bypass", tool_name, server_name, key)
+        logger.info("MCP trust gate: trust prompt skipped for '%s' on untrusted server '%s' (key %r): remembered "
+                    "grant or approval bypass", tool_name, server_name, key)
         gated = False
     charge = None
     if key in _core._server_cost_policies:  # no table: not even a session lookup, main's path byte for byte
