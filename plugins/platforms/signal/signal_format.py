@@ -82,13 +82,16 @@ def markdown_to_signal(text: str) -> tuple[str, list[str]]:
     text = _fence_tables(_normalize_bullet_markers(re.sub(r"\n{3,}", "\n\n", text).strip()))
     styles: list[tuple[int, int, str]] = []
     code_blocks: list[tuple[int, int]] = []
-    while match := _CODE_BLOCK_RE.search(text):
+    # One pass over the original text: code a longer fence kept may hold ``` runs, never re-parsed.
+    unwrapped, last = "", 0
+    for match in _CODE_BLOCK_RE.finditer(text):
         inner = match.group(2).rstrip("\n")
-        start = match.start()
-        length = len(inner)
-        styles.append((start, length, "MONOSPACE"))
-        code_blocks.append((start, start + length))
-        text = text[:start] + inner + text[match.end() :]
+        unwrapped += text[last : match.start()]
+        styles.append((len(unwrapped), len(inner), "MONOSPACE"))
+        code_blocks.append((len(unwrapped), len(unwrapped) + len(inner)))
+        unwrapped += inner
+        last = match.end()
+    text = unwrapped + text[last:]
     new_text, last_end = "", 0
     heading_removals: list[tuple[int, int]] = []
     heading_styles: list[tuple[int, int, str]] = []

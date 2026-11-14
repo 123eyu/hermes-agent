@@ -346,6 +346,8 @@ def test_fenced_command_round_trips_amid_styled_prose(command):
     "echo " + "`" * 3 + " ; rm -rf /tmp/*/x*",
     "printf '" + "`" * 3 + "' && rm -rf ~~/home~~",
     "a " + "`" * 4 + " b **c** _d_",
+    "echo " + "`" * 3 + " ; echo " + "`" * 3,
+    "printf '" + "`" * 3 + "x" + "`" * 3 + "' && rm -rf /srv/*/c*",
 ])
 def test_command_with_a_backtick_run_round_trips_inside_its_longer_fence(command):
     """code_fence() wraps a command holding ``` in a longer fence; the ``` inside must not close it."""
@@ -359,3 +361,15 @@ def test_command_with_a_backtick_run_round_trips_inside_its_longer_fence(command
     start, length, _ = mono[0].split(":")
     assert text[int(start) : int(start) + int(length)] == command
     assert text == f"Approve?\n{command}\nThis is dangerous."
+
+
+def test_backtick_run_kept_in_a_longer_fence_does_not_pair_with_a_later_fence():
+    """A ``` kept inside one block must not open a new block with the next fence in the message."""
+    from gateway.platforms.base_exec_approval import code_fence
+
+    command = "echo " + "`" * 3 + " x"
+    fence = code_fence(command)
+    text, styles = _m2s(f"{fence}\n{command}\n{fence}\nThen **this**:\n```\nlater\n```")
+    assert text == f"{command}\nThen this:\nlater"
+    spans = [m.split(":") for m in _find_style(styles, "MONOSPACE")]
+    assert [text[int(s) : int(s) + int(n)] for s, n, _ in spans] == [command, "later"]
