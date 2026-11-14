@@ -120,3 +120,18 @@ def test_credential_rotation_never_swaps_the_oauth_row_onto_a_foundry_session(bu
                                   runtime_api_key="KAZ-2", base_url=FOUNDRY_URL)
     assert ClientLifecycleMixin._swap_credential(agent, foundry_row) is True
     assert (agent.api_key, agent.base_url) == ("KAZ-2", FOUNDRY_URL)
+
+
+@pytest.mark.parametrize(("base_url", "expected"), [
+    (FOUNDRY_URL, {"token": "KAZ-ENV", "base_url": FOUNDRY_URL}),
+    ("", {"token": OAUTH_TOKEN, "base_url": "https://api.anthropic.com"}),
+])
+def test_cached_aux_client_takes_the_oauth_row_only_off_foundry(built, monkeypatch, base_url, expected):
+    """``call_llm(provider="anthropic")`` goes through ``_get_cached_client``, whose pool peek must not
+    hand the OAuth row to ``_try_anthropic`` as a caller-supplied key (@BearHuddleston's repro)."""
+    monkeypatch.setenv("AZURE_ANTHROPIC_KEY", "KAZ-ENV")
+    _home(provider="anthropic", default="claude-x", **({"base_url": base_url} if base_url else {}))
+    monkeypatch.setattr(aux, "_client_cache", {})
+    client, _model = aux._get_cached_client("anthropic")
+    assert client is not None
+    assert built == expected

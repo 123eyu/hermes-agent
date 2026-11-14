@@ -5850,7 +5850,7 @@ def _get_cached_client(
     # resolve_api_key_provider_credentials prefers env vars, which would bypass pool rotation
     # and retry an exhausted key. A custom entry peeks only its rows bound to the address called.
     effective_api_key = api_key
-    if not effective_api_key:
+    if not effective_api_key and _normalize_aux_provider(provider) != "anthropic":  # it picks its own (#154242)
         from hermes_cli.runtime_provider import choose_pool_key
         _pool = pool_for_aux_provider(provider, _normalize_aux_provider(provider), lambda k: _load_pool_with_credentials(k, " (peek)"), base_url)
         with contextlib.suppress(Exception):  # an unreadable pool leaves the resolver's own key, as before
