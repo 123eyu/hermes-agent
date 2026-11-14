@@ -72,6 +72,14 @@ def test_a_composite_keeps_a_builtin_that_a_server_is_named_like(tmp_path, pick)
     assert _toolsets(tmp_path, cfg, ['session_search']) == {'session_search'}
 
 
+def test_a_composite_keeps_file_when_a_server_is_named_file(tmp_path):
+    # ``hermes-api-server`` needs the built-in file tools; an MCP server called ``file`` must not cost it them.
+    cfg = {'platform_toolsets': {'cli': ['hermes-cli']}, 'mcp_servers': {'file': {'command': str(tmp_path / 'absent')}}}
+    assert {'file', 'terminal'} <= _toolsets(tmp_path, cfg, ['hermes-api-server'])
+    # ``hermes-webhook`` has no file tools, so the unnamed server stays out.
+    assert 'file' not in _toolsets(tmp_path, cfg, ['hermes-webhook'])
+
+
 @pytest.mark.parametrize('pick', ['hermes-api-server', 'hermes-webhook'])
 def test_a_wider_plugin_key_is_not_put_back_for_a_composite(tmp_path, builtin_named_plugin_keys, pick):
     # The ``coding`` key also holds web_search, but putting it back would add terminal and file tools.
