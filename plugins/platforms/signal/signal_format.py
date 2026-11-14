@@ -27,6 +27,8 @@ def _split_fenced(source: str) -> list[str]:
     return parts + [source[last:]]
 _HEADING_RE = re.compile(r"^#{1,6}\s+", re.MULTILINE)
 _INLINE_PATTERNS = [
+    # First match wins and spans never nest. Inline code goes first so its text stays verbatim; an
+    # enclosing pair then loses ("**run `x`**" keeps its asterisks, where main kept the backticks).
     (re.compile(r"`(.+?)`"), "MONOSPACE"),
     (re.compile(r"\*\*(.+?)\*\*", re.DOTALL), "BOLD"),
     (re.compile(r"__(.+?)__", re.DOTALL), "BOLD"),
