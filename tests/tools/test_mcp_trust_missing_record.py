@@ -168,3 +168,27 @@ def test_malformed_managed_overlay_fails_closed(session, managed_dir, caplog):
         assert _write_call_asks()
     session.call_tool.assert_not_awaited()
     assert any("config read failed" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.platforms("posix")
+def test_unstattable_managed_overlay_fails_closed(session, managed_dir, caplog):
+    """A stat error other than 'missing' (a symlink loop) must not read as 'no overlay' either."""
+    _configure(None)
+    (managed_dir / "config.yaml").symlink_to(managed_dir / "config.yaml")
+    with caplog.at_level(logging.WARNING, logger=_mcp_handlers.logger.name):
+        assert _write_call_asks()
+    session.call_tool.assert_not_awaited()
+    assert any("config read failed (OSError)" in r.getMessage() for r in caplog.records)
+
+
+def test_config_backend_outage_fails_closed(session, caplog):
+    """``ConfigBackendUnavailable`` is a ``SystemExit``: the gate must still answer untrusted, not abort the turn."""
+    from hermes_cli.config_backend import ConfigBackendUnavailable
+
+    def outage(*_args, **_kwargs):
+        raise ConfigBackendUnavailable("config plane unreachable")
+    with caplog.at_level(logging.WARNING, logger=_mcp_handlers.logger.name), \
+         patch("hermes_cli.config_backend.read_config_doc_readonly", outage):
+        assert _write_call_asks()
+    session.call_tool.assert_not_awaited()
+    assert any("config read failed (ConfigBackendUnavailable)" in r.getMessage() for r in caplog.records)

@@ -169,9 +169,10 @@ def _configured_trust(server_name: str, key) -> str:
     scope = _key_scope(key)
     # A profile scope is that profile's home key; the HERMES_HOME override can name another profile.
     home = Path(scope) if scope and Path(scope).is_absolute() else get_hermes_home()
+    from hermes_cli.config_backend import ConfigBackendUnavailable  # a SystemExit: a config-plane outage
     try:
         raw = _raw_server_entry_trust(server_name, home)
-    except Exception as exc:  # health: allow BLE001 -- any read failure fails closed; the warning names it
+    except (Exception, ConfigBackendUnavailable) as exc:  # health: allow BLE001 -- any read failure fails closed
         trust, source = _core._TRUST_UNTRUSTED, f"config read failed ({type(exc).__name__})"
     else:
         if raw is _NOT_CONFIGURED:
