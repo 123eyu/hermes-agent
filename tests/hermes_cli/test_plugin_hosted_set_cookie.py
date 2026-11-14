@@ -11,6 +11,7 @@ import logging
 import pytest
 
 from hermes_cli.plugin_host import PluginHost
+from hermes_constants import hermes_home_key
 from tests.hermes_cli import test_plugin_secondary_profile_host as secondary
 
 daemon = secondary.daemon
@@ -54,6 +55,7 @@ def test_hosted_plugin_answer_reaches_the_browser_without_set_cookie(daemon, mon
         assert response.headers.get_list("set-cookie2") == []
         assert response.headers["x-plugin"] == "kept"
     assert not daemon.client.cookies
-    warnings = [r.getMessage() for r in caplog.records if "Set-Cookie" in r.getMessage()]
+    warnings = [r for r in caplog.records if "Set-Cookie" in r.getMessage()]
     assert len(warnings) == 1
-    assert f"(profile home {home})" in warnings[0]  # names which profile's copy of the plugin did it
+    # names which profile's copy of the plugin did it (as a home key: Windows normcases the launch home)
+    assert hermes_home_key(warnings[0].args[1]) == hermes_home_key(home)
