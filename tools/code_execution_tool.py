@@ -591,7 +591,8 @@ def _finish_remote_kernel_result(kernel_result: dict[str, Any], *,
         _apply_timeout(result, f"Cell timed out after {timeout}s; the remote session kernel was "
                                "killed and its state was lost. The next call starts fresh.")
     elif result["status"] == "error" and kernel_result.get("error"):
-        result["error"] = kernel_result["error"]
+        from agent.redact import redact_code_output
+        result["error"] = redact_code_output(kernel_result["error"])  # raw last line of the remote traceback
     return json.dumps(result, ensure_ascii=False)
 
 

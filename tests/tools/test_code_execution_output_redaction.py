@@ -41,6 +41,13 @@ def test_env_dump_lines_are_masked(run):
     assert "export DB_PASSWORD=" in result["output"]
 
 
+def test_remote_error_field_is_masked():
+    payload = {"status": "error", "stdout": "", "stderr": "", "traceback": f"DB_PASSWORD={_OPAQUE}\n",
+               "error": f"DB_PASSWORD={_OPAQUE}", "tool_calls_made": 0}
+    result = json.loads(_finish_remote_kernel_result(payload, timeout=30, exec_start=time.monotonic()))
+    assert result["error"].startswith("DB_PASSWORD=") and _OPAQUE not in result["error"], result
+
+
 @pytest.mark.parametrize("run", [_run_local, _run_remote], ids=["local-kernel", "remote"])
 def test_printed_source_is_not_rewritten(run):
     result = run(_SOURCE)
@@ -67,3 +74,23 @@ def test_remote_cap_cannot_split_key_from_value():
     result = _run_remote(head + "DB_PASSWORD=" + tail)
     assert result["stdout_truncated"], result
     assert _OPAQUE not in result["output"]
+
+
+@pytest.mark.parametrize("line", ["GIT_COMMIT=0123456789abcdef0123456789abcdef01234567",
+                                  "PATH=/usr/local/bin:/usr/bin", "MAX_TOKENS=100"])
+def test_non_secret_env_lines_are_kept(line):
+    from agent.redact import redact_code_output
+    assert redact_code_output(line + "\n") == line + "\n"
+
+
+def test_quotes_and_inline_assignments_keep_their_shape():
+    from agent.redact import redact_code_output
+    out = redact_code_output(f"export DB_PASSWORD='short pw'\nFOO=bar MY_SERVICE_TOKEN={_OPAQUE}\n").splitlines()
+    assert out[0] == "export DB_PASSWORD='***'"
+    assert out[1].startswith("FOO=bar MY_SERVICE_TOKEN=") and _OPAQUE not in out[1], out
+
+
+def test_redaction_off_leaves_env_lines(monkeypatch):
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+    from agent.redact import redact_code_output
+    assert redact_code_output(_ENV_DUMP) == _ENV_DUMP
