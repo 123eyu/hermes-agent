@@ -808,6 +808,9 @@ def _resolve_from_pool(provider: str, requested_provider: str, model_cfg: dict[s
 
 def _explicit_anthropic(requested_provider, model_cfg, api_key, base_url, target_model):
     base_url = base_url or _anthropic_cfg_base_url(model_cfg) or _ANTHROPIC_DEFAULT_BASE_URL
+    if base_url_host_matches(base_url, "azure.com"):  # every alias (claude, claude-code) lands here: never OAuth on Foundry
+        if not (api_key := api_key or anthropic_foundry_key(model_cfg, base_url, target_model)):
+            raise AuthError(_NO_AZURE_KEY)
     api_key = api_key or _anthropic_token_or_raise(model=target_model)
     return _runtime("anthropic", "anthropic_messages", base_url, api_key, source="explicit", requested_provider=requested_provider)
 

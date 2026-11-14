@@ -119,8 +119,36 @@ def test_providers_entry_owning_the_foundry_url_supplies_its_own_key(home):
     assert (runtime["api_key"], runtime["source"], runtime["base_url"]) == ("KAZ-ENTRY", "config:providers", FOUNDRY_URL)
 
 
-def test_explicit_foundry_base_url_without_an_azure_key_fails_loudly(home):
-    """An empty key would be filled with the OAuth token downstream, so the resolver refuses."""
+@pytest.mark.parametrize("requested", ["anthropic", "claude", "claude-code"])
+def test_explicit_foundry_base_url_without_an_azure_key_fails_loudly(home, requested):
+    """An empty key would be filled with the OAuth token downstream, so the resolver refuses,
+    under every alias of the provider (the aliases skip the requested-name shortcut)."""
     write_home(home)
     with pytest.raises(rp.AuthError, match="Azure Anthropic API key"):
-        rp.resolve_runtime_provider(requested="anthropic", explicit_base_url=FOUNDRY_URL)
+        rp.resolve_runtime_provider(requested=requested, explicit_base_url=FOUNDRY_URL)
+
+
+@pytest.mark.parametrize("requested", ["anthropic", "claude", "claude-code"])
+def test_explicit_foundry_base_url_uses_the_azure_env_key_under_every_alias(home, monkeypatch, requested):
+    monkeypatch.setenv("AZURE_ANTHROPIC_KEY", "KAZ-ENV")
+    write_home(home)
+    runtime = rp.resolve_runtime_provider(requested=requested, explicit_base_url=FOUNDRY_URL)
+    assert (runtime["provider"], runtime["api_key"], runtime["base_url"]) == ("anthropic", "KAZ-ENV", FOUNDRY_URL)
+
+
+def test_delegation_with_a_claude_alias_and_a_foundry_base_url_never_gets_the_oauth_token(home, monkeypatch):
+    """``delegation.provider: claude`` + ``delegation.base_url: <foundry>`` reaches the same resolver."""
+    from tools.delegate_tool_config import _runtime_provider_credentials
+    write_home(home)
+    with pytest.raises(ValueError, match="Azure Anthropic API key"):
+        _runtime_provider_credentials({"provider": "claude", "model": "claude-x", "base_url": FOUNDRY_URL}, None, FOUNDRY_URL)
+    monkeypatch.setenv("AZURE_ANTHROPIC_KEY", "KAZ-ENV")
+    creds = _runtime_provider_credentials({"provider": "claude", "model": "claude-x", "base_url": FOUNDRY_URL}, None, FOUNDRY_URL)
+    assert (creds["api_key"], creds["base_url"]) == ("KAZ-ENV", FOUNDRY_URL)
+
+
+def test_explicit_non_foundry_base_url_under_the_claude_alias_keeps_the_oauth_token(home):
+    """Control: the Foundry guard is host-scoped; an Anthropic-compatible proxy keeps main's behaviour."""
+    write_home(home)
+    runtime = rp.resolve_runtime_provider(requested="claude", explicit_base_url="https://api.anthropic.com")
+    assert runtime["api_key"] == OAUTH_TOKEN
