@@ -59,3 +59,19 @@ def test_spaced_source_code_unchanged(line):
     text = f"```python\n{line}\n```\n"
     assert redact_sensitive_text(text) == text
     assert redact_for_egress(text) == text
+
+
+@pytest.mark.parametrize("text", [
+    "password" * 1500 + "." * 1500 + " = ",  # `[..]*NAME[..]*` keys backtracked per start offset
+    "a." + "password" * 6000 + " = ",
+    "  5|" + "password" * 6000 + " = ",
+], ids=["dotted-run", "dotted-prefix", "anchored-gutter"])
+def test_spaced_pass_linear_on_long_keyword_runs(text):
+    import time
+
+    from agent.redact import _mask_token
+    from agent.redact_spaced_cfg import redact_spaced_cfg_assignments
+
+    start = time.perf_counter()
+    redact_spaced_cfg_assignments(text, _mask_token)
+    assert time.perf_counter() - start < 1.0

@@ -22,21 +22,41 @@ _IDENTIFIER_PATH_RE = re.compile(r"[A-Za-z_$][\w$]*+(?:\.[A-Za-z_$][\w$]*+)*+")
 
 @functools.cache
 def _patterns() -> tuple["re.Pattern[str]", ...]:
-    from agent.redact import _LINE_NUMBER_GUTTER, _SECRET_CFG_NAMES
+    from agent.redact import _LINE_NUMBER_GUTTER
 
+    # Keys are one possessive run checked by _key_names_secret: the key must reach the separator, so
+    # the run is the only candidate, and `[..]*NAME[..]*` backtracking is superlinear on long runs.
     value = rf"{_SPACED_SEP}(?:{_QUOTED}|{_UNQUOTED})"
     dotted = re.compile(
-        rf"(?<![A-Za-z0-9_.\-])"
-        rf"(?P<key>[A-Za-z0-9_\-]++\.[A-Za-z0-9_.\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_.\-]*+"
-        rf"|[A-Za-z0-9_.\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_.\-]*\.[A-Za-z0-9_.\-]++){value}",
-        re.IGNORECASE | re.MULTILINE,
+        rf"(?<![A-Za-z0-9_.\-])(?P<key>(?P<name>[A-Za-z0-9_\-]*+\.[A-Za-z0-9_.\-]*+)){value}",
+        re.MULTILINE,
     )
     anchored = re.compile(
-        rf"(?P<key>^[ \t]*{_LINE_NUMBER_GUTTER}(?:export[ \t]+)?"
-        rf"[A-Za-z0-9_\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_\-]*){value}",
+        rf"(?P<key>^[ \t]*{_LINE_NUMBER_GUTTER}(?:export[ \t]+)?(?P<name>[A-Za-z0-9_.\-]++)){value}",
         re.IGNORECASE | re.MULTILINE,
     )
     return dotted, anchored
+
+
+def _key_names_secret(name: str, dotted: bool) -> bool:
+    """The keyword placement the adjacent _CFG_DOTTED_RE / _CFG_ANCHORED_RE keys require: a bare key
+    is dot-free around a keyword (``api.key`` carries its own dot); a dotted key has the keyword after
+    a non-empty first segment, or before a later dot that is not the last character."""
+    from agent.redact import _CFG_SECRET_WORD_RE
+
+    if not dotted:
+        return bool(_bare_key_re().fullmatch(name))
+    first_dot, last_dot = name.find("."), name.rfind(".", 0, len(name) - 1)
+    return bool((first_dot > 0 and _CFG_SECRET_WORD_RE.search(name, first_dot + 1))
+                or (last_dot > 0 and _CFG_SECRET_WORD_RE.search(name, 0, last_dot)))
+
+
+@functools.cache
+def _bare_key_re() -> "re.Pattern[str]":
+    # One fixed start (fullmatch), so the keyword backtrack is linear in the key, not per offset.
+    from agent.redact import _SECRET_CFG_NAMES
+
+    return re.compile(rf"[A-Za-z0-9_\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_\-]*", re.IGNORECASE)
 
 
 def _is_code_expression(key: str, value: str) -> bool:
@@ -72,7 +92,9 @@ def redact_spaced_cfg_assignments(text: str, mask) -> str:
     """Mask config secrets written ``key = value``; the adjacent ``key=value`` form is not matched."""
     from agent.redact import _should_redact_assignment
 
-    def _sub(m: "re.Match[str]") -> str:
+    def _sub(m: "re.Match[str]", dotted: bool) -> str:
+        if not _key_names_secret(m.group("name"), dotted):
+            return m.group(0)
         key, quoted = m.group("key"), m.group("qv") is not None
         value = m.group("qv") if quoted else m.group("uv")
         if not (_quoted_value_is_secret(key, value) if quoted else not _is_code_expression(key, value)):
@@ -84,6 +106,6 @@ def redact_spaced_cfg_assignments(text: str, mask) -> str:
 
     if not _SPACED_EQ_RE.search(text):  # the common case: nothing spaced around ``=`` to look at
         return text
-    for pattern in _patterns():
-        text = pattern.sub(_sub, text)
-    return text
+    dotted, anchored = _patterns()
+    text = dotted.sub(lambda m: _sub(m, True), text)
+    return anchored.sub(lambda m: _sub(m, False), text)
