@@ -266,3 +266,12 @@ def test_registered_bounded_body_does_not_mask_a_prefix_of_a_longer_run(pattern,
     as the shared guard did: the 8-char window is a prefix of a longer run, not a token (#142852)."""
     assert register_redaction_patterns([pattern], source="test") == 1
     assert redact_sensitive_text(text, force=True) == text
+
+
+def test_registered_pattern_with_a_bracket_in_a_comment_does_not_poison_the_registry():
+    """A ``[`` inside a ``(?#...)`` comment is no class: the guard falls back to the shared one
+    instead of raising, so this pattern and every later registration still apply (#142852)."""
+    assert register_redaction_patterns([r"zzkey-[A-Za-z0-9]{10,}(?# [)"], source="a") == 1
+    assert register_redaction_patterns([r"okkey-[A-Za-z0-9]{10,}"], source="b") == 1
+    for token in ("zzkey-Ab3dE5gH7jK9mN1pQ3s", "okkey-Ab3dE5gH7jK9mN1pQ3s"):
+        assert token not in redact_sensitive_text(f"x {token} y", force=True)

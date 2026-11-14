@@ -258,8 +258,8 @@ class TestSeparatorTail:
 
 class TestKnownPrefixUnderscoreDashTail:
     def test_prefix_tokens_followed_by_an_underscore_or_dash_are_masked(self):
-        """The trailing guard negates each pattern's own body class, not one shared
-        class: a shared class wider than the body (``_``/``-`` vs ``ghp_…[A-Za-z0-9]``)
+        """The trailing guard rejects ``_``/``-`` only when a pattern's body class admits
+        them: the old shared class, wider than the body (``_``/``-`` vs ``ghp_…[A-Za-z0-9]``),
         failed at the token's natural end and at every backtrack step alike, so
         ``ghp_…_SUFFIX`` was not matched at all and shipped in cleartext (#142852)."""
         cases = [

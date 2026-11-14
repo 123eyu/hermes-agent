@@ -856,16 +856,18 @@ def _trailing_guard(pattern: str) -> str:
     only when the pattern's body class admits them. Never stricter than the shared guard, so a
     plugin pattern whose last class is a delimiter check (``(?=[\\s.,])``) still matches."""
     body_class = _last_char_class(pattern)
-    if body_class is None:
-        return r"(?![A-Za-z0-9_-])"
-    return "(?![A-Za-z0-9" + "".join(c for c in "_-" if re.fullmatch(body_class, c)) + "])"
+    try:  # a "[" inside a (?#...) comment is no class: fall back to the shared guard
+        seps = "".join(c for c in "_-" if re.fullmatch(body_class, c)) if body_class else None
+    except re.error:
+        seps = None
+    return r"(?![A-Za-z0-9_-])" if seps is None else f"(?![A-Za-z0-9{seps}])"
 
 
 def _compile_prefix_matcher(patterns: list) -> re.Pattern[str]:
-    # The trailing guard may only negate a pattern's own body class. One shared
-    # class wider than a body (``_``/``-`` vs ``ghp_…[A-Za-z0-9]{10,}``) fails at
-    # the body's natural end and at every backtrack step alike, so a token
-    # followed by an underscore/dash is not matched at all and ships in cleartext
+    # Each branch gets its own guard (_trailing_guard): a following alphanumeric always
+    # blocks, ``_``/``-`` only when the body class admits them. The old shared
+    # ``(?![A-Za-z0-9_-])`` failed ``ghp_…[A-Za-z0-9]{10,}`` at the body's end and at every
+    # backtrack step, so a token followed by ``_``/``-`` was missed and shipped in cleartext
     # (#142852). A pattern without a ``[...]`` class falls back to the shared class.
     return re.compile(r"(?<![A-Za-z0-9_-])(" + "|".join(f"(?:{p}){_trailing_guard(p)}" for p in patterns) + r")")
 
