@@ -7,7 +7,10 @@ embeds the CRT). A fresh Windows has no copy, so staging failed with
 
 from __future__ import annotations
 
+import subprocess
+
 import pm.install
+import pm.packages
 from pm.registry import get_package, walk
 from pm.store import Store
 
@@ -37,8 +40,36 @@ def test_python_installs_before_ripgrep_so_staging_can_read_it():
     assert order.index("python") < order.index("ripgrep")
 
 
-def test_arm64_windows_ripgrep_verify_rejects_entry_missing_vcruntime(tmp_path):
+def _arm64_rg_entry(tmp_path, monkeypatch, outcome):
+    """An ARM64 rg.exe entry on its own host, so verify() smoke-probes it; returns the probe launches."""
     entry = tmp_path / "rg-entry"
     entry.mkdir()
     (entry / "rg.exe").write_bytes(b"MZ" + bytes(58) + (64).to_bytes(4, "little") + b"PE\0\0" + (0xAA64).to_bytes(2, "little"))
+    launched = []
+
+    def run(argv, **kwargs):
+        launched.append(argv)
+        return outcome(argv)
+
+    monkeypatch.setattr(pm.packages, "current_target", lambda: "win32-arm64")
+    monkeypatch.setattr(subprocess, "run", run)
+    return entry, launched
+
+
+def _missing_dll_dialog(argv):
+    raise subprocess.TimeoutExpired(argv, 60)
+
+
+def test_arm64_windows_ripgrep_verify_rejects_entry_missing_vcruntime_without_launching_it(tmp_path, monkeypatch):
+    entry, launched = _arm64_rg_entry(tmp_path, monkeypatch, _missing_dll_dialog)
+
     assert "vcruntime140.dll" in get_package("ripgrep").verify(entry, "win32-arm64")
+    assert launched == []
+
+
+def test_arm64_windows_ripgrep_verify_still_probes_an_entry_with_vcruntime(tmp_path, monkeypatch):
+    entry, launched = _arm64_rg_entry(tmp_path, monkeypatch, lambda argv: subprocess.CompletedProcess(argv, 0, b"", b""))
+    (entry / "vcruntime140.dll").write_bytes(b"arm64 vc runtime")
+
+    assert get_package("ripgrep").verify(entry, "win32-arm64") == ""
+    assert [argv[1:] for argv in launched] == [["--version"]]

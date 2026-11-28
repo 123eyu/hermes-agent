@@ -47,12 +47,10 @@ class Bws(BinaryPackage):
             stage_python_vcruntime(self.name, store, staged, target)
 
     def verify(self, entry: Path, target: str) -> str:
-        reason = super().verify(entry, target)
-        if reason or not target.startswith("win32"):
-            return reason
-        if not (entry / "vcruntime140.dll").is_file():
+        # Ahead of the probe: without the DLL, bws.exe --version sits on the missing-DLL dialog until its timeout.
+        if target.startswith("win32") and not (entry / "vcruntime140.dll").is_file():
             return "vcruntime140.dll is missing beside bws.exe"
-        return ""
+        return super().verify(entry, target)
 
 
 class _SignedBinary(BinaryPackage):

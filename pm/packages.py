@@ -1106,12 +1106,10 @@ class Ripgrep(BinaryPackage):
     def verify(self, entry: Path, target: str) -> str:
         if target == "linux-arm64-bionic":
             return Package.verify(self, entry, target)
-        reason = super().verify(entry, target)
-        if reason or target != "win32-arm64":
-            return reason
-        if not (entry / "vcruntime140.dll").is_file():
+        # Ahead of the probe: without the DLL, rg.exe --version can sit on the loader's missing-DLL dialog.
+        if target == "win32-arm64" and not (entry / "vcruntime140.dll").is_file():
             return "vcruntime140.dll is missing beside rg.exe"
-        return ""
+        return super().verify(entry, target)
 
     def fetch_url(self, version: str, target: str) -> str:
         if target == "linux-arm64-bionic":

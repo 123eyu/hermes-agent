@@ -8,9 +8,12 @@ a missing-DLL modal or exits with STATUS_DLL_NOT_FOUND.
 
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 
 import pm.install
+import pm.packages
 from pm import paths
 from pm.lock import Facts, Lockfile
 from pm.registry import get_package, walk
@@ -89,14 +92,46 @@ def test_windows_bws_stages_vc_runtime_from_build_store_outside_runtime_dir(tmp_
     assert (staged / "vcruntime140.dll").read_bytes() == runtime.read_bytes()
 
 
+def _probe_recorder(monkeypatch, target, outcome):
+    """Make target the host's own, so verify() smoke-probes, and record each probe launch."""
+    launched = []
+
+    def run(argv, **kwargs):
+        launched.append(argv)
+        return outcome(argv)
+
+    monkeypatch.setattr(pm.packages, "current_target", lambda: target)
+    monkeypatch.setattr(subprocess, "run", run)
+    return launched
+
+
+def _missing_dll_dialog(argv):
+    raise subprocess.TimeoutExpired(argv, 60)
+
+
 @pytest.mark.parametrize("target,arch", [("win32-x64", "x64"), ("win32-arm64", "arm64")])
-def test_windows_bws_verify_rejects_entry_missing_vcruntime(tmp_path, target, arch):
+def test_windows_bws_verify_rejects_entry_missing_vcruntime_without_launching_it(tmp_path, monkeypatch, target, arch):
     entry = tmp_path / "bws-entry"
     entry.mkdir()
     (entry / "bws.exe").write_bytes(_pe(arch))
+    launched = _probe_recorder(monkeypatch, target, _missing_dll_dialog)
 
     reason = get_package("bws").verify(entry, target)
+
     assert "vcruntime140.dll" in reason
+    assert launched == []
+
+
+@pytest.mark.parametrize("target,arch", [("win32-x64", "x64"), ("win32-arm64", "arm64")])
+def test_windows_bws_verify_still_probes_an_entry_with_vcruntime(tmp_path, monkeypatch, target, arch):
+    entry = tmp_path / "bws-entry"
+    entry.mkdir()
+    (entry / "bws.exe").write_bytes(_pe(arch))
+    (entry / "vcruntime140.dll").write_bytes(_pe(arch))
+    launched = _probe_recorder(monkeypatch, target, lambda argv: subprocess.CompletedProcess(argv, 0, b"bws 2.0.0", b""))
+
+    assert get_package("bws").verify(entry, target) == ""
+    assert [argv[1:] for argv in launched] == [["--version"]]
 
 
 def test_posix_bws_staging_does_not_copy_vcruntime(tmp_path, monkeypatch):
