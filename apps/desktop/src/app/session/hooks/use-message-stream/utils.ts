@@ -4,7 +4,7 @@ import type { ErrorSurface } from '@/lib/error-surface'
 import { isTodoToolName } from '@/lib/todos'
 
 import type { ClientSessionState } from '../../../types'
-import { shouldHoldBackSessionInfoModel } from '../model-pick-ledger'
+import { noteAuthoritativeModel, noteHeldConfirmedPolicy, shouldHoldBackSessionInfoModel } from '../model-pick-ledger'
 
 export type SessionRuntimeStatePatch = Partial<
   Pick<
@@ -62,19 +62,32 @@ export function stripPatchKeys(
 
 /** Fence a runtime snapshot (`session.activate` / `session.resume` info) the way `session.info` is fenced:
  *  one older than the cached revision keeps out of the model, policy and revision fields, so a late
- *  snapshot can neither restore an older route nor lower the fence, and one an in-flight pick holds
- *  back leaves that pick's paint alone. */
+ *  snapshot can neither restore an older route nor lower the fence; one an in-flight pick holds back
+ *  leaves that pick's paint alone but keeps its policy for the pick's rollback; an accepted route is
+ *  recorded so a failed pick cannot roll back over it. */
 export function fenceRuntimeSnapshotPatch(
   patch: SessionRuntimeStatePatch,
-  knownRevision: number | undefined,
+  known: Pick<ClientSessionState, 'model' | 'provider' | 'revision'> | undefined,
   pickKey: string
 ): void {
-  if (patch.revision !== undefined && knownRevision !== undefined && patch.revision < knownRevision) {
+  const { model, provider, revision } = patch
+
+  if (revision !== undefined && known?.revision !== undefined && revision < known.revision) {
     stripPatchKeys(patch, STALE_REVISION_PATCH_KEYS)
-  } else if (
-    shouldHoldBackSessionInfoModel(pickKey, { model: patch.model, provider: patch.provider, revision: patch.revision })
-  ) {
+  } else if (shouldHoldBackSessionInfoModel(pickKey, { model, provider, revision })) {
+    if (revision !== undefined) {
+      const { fast, reasoningEffort, reasoningEffortWire, serviceTier } = patch
+      noteHeldConfirmedPolicy(pickKey, revision, { fast, reasoningEffort, reasoningEffortWire, serviceTier }, patch)
+    }
+
     stripPatchKeys(patch, HELD_MODEL_PATCH_KEYS)
+  } else if (revision !== undefined && (model !== undefined || provider !== undefined)) {
+    noteAuthoritativeModel(pickKey, {
+      model: model ?? known?.model ?? '',
+      provider: provider ?? known?.provider ?? '',
+      reasoningEffortWire: patch.reasoningEffortWire,
+      revision
+    })
   }
 }
 

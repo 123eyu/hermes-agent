@@ -2227,11 +2227,7 @@ export function applyRuntimeInfo(
 
   if (sessionId) {
     // Before publishing: the composer globals and the caller's spread both read this patch.
-    fenceRuntimeSnapshotPatch(
-      sessionState,
-      $sessionStates.get()[sessionId]?.revision,
-      modelPickKey(sessionId, null, null)
-    )
+    fenceRuntimeSnapshotPatch(sessionState, $sessionStates.get()[sessionId], modelPickKey(sessionId, null, null))
   }
 
   if (info.branch !== undefined) {

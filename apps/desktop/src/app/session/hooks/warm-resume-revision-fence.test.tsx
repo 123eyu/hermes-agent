@@ -47,13 +47,16 @@ const noop = async () => undefined
 const A = { model: 'model-a', provider: 'provider-a' }
 const X = { model: 'model-x', provider: 'provider-x' }
 
-function mount(activate: Promise<SessionResumeResult>, modelSwitch?: Promise<Record<string, unknown>>) {
+// Each model switch answers with the next promise in `modelSwitches`, in call order.
+function mount(activate: Promise<SessionResumeResult>, modelSwitches: Promise<Record<string, unknown>>[] = []) {
+  const switches = [...modelSwitches]
+
   const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
     if (method === 'session.activate') {
       return activate
     }
 
-    return modelSwitch && params?.key === 'model' ? modelSwitch : {}
+    return params?.key === 'model' && switches.length > 0 ? switches.shift() : {}
   })
 
   const hook = renderHook(() => {
@@ -115,9 +118,9 @@ const sessionInfo = (row: typeof A, revision: number): GatewayEvent =>
     type: 'session.info'
   }) as GatewayEvent
 
-const activateSnapshot = (row: typeof A, revision: number): SessionResumeResult =>
+const activateSnapshot = (row: typeof A, revision: number, effort = 'high'): SessionResumeResult =>
   ({
-    info: { ...row, reasoning_effort: 'high', reasoning_effort_wire: 'high', revision },
+    info: { ...row, reasoning_effort: effort, reasoning_effort_wire: effort, revision },
     message_count: 0,
     messages: [],
     messages_omitted: true,
@@ -203,7 +206,7 @@ it('keeps a newer model revision when the warm activate snapshot that lands afte
 it('keeps an in-flight pick painted when the warm activate snapshot is from before the pick', async () => {
   const activate = deferred<SessionResumeResult>()
   const modelSwitch = deferred<Record<string, unknown>>()
-  const { hook, requestGateway } = mount(activate.promise, modelSwitch.promise)
+  const { hook, requestGateway } = mount(activate.promise, [modelSwitch.promise])
 
   let pending!: Promise<void>
   await act(async () => {
@@ -232,4 +235,80 @@ it('keeps an in-flight pick painted when the warm activate snapshot is from befo
   })
 
   expect(cachedState(hook)).toMatchObject(X)
+})
+
+it('rolls back to the route an accepted activate snapshot reported when every pick around it fails', async () => {
+  const B = { model: 'model-b', provider: 'provider-b' }
+  const C = { model: 'model-c', provider: 'provider-c' }
+  const activate = deferred<SessionResumeResult>()
+  const switchB = deferred<Record<string, unknown>>()
+  const switchC = deferred<Record<string, unknown>>()
+  const { hook, requestGateway } = mount(activate.promise, [switchB.promise, switchC.promise])
+
+  let pending!: Promise<void>
+  await act(async () => {
+    pending = hook.result.current.actions.resumeSession(storedId, true)
+  })
+  await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('session.activate', expect.anything()))
+
+  let pickB!: Promise<boolean>
+  act(() => {
+    pickB = hook.result.current.controls.selectModel({ ...B, sessionId: runtimeId })
+  })
+
+  // B is pending from A@5; activate reports another surface's switch to X@6.
+  await act(async () => {
+    activate.resolve(activateSnapshot(X, 6))
+    await pending
+  })
+  expect(cachedState(hook)).toMatchObject({ ...X, revision: 6 })
+
+  let pickC!: Promise<boolean>
+  act(() => {
+    pickC = hook.result.current.controls.selectModel({ ...C, sessionId: runtimeId })
+  })
+
+  await act(async () => {
+    switchB.reject(new Error('revision_conflict'))
+    await expect(pickB).resolves.toBe(false)
+  })
+
+  await act(async () => {
+    switchC.reject(new Error('provider rejected'))
+    await expect(pickC).resolves.toBe(false)
+  })
+
+  expect(cachedState(hook)).toMatchObject({ ...X, revision: 6 })
+})
+
+it('restores policy a held activate snapshot reported for the pre-pick route when the pick fails', async () => {
+  const B = { model: 'model-b', provider: 'provider-b' }
+  const activate = deferred<SessionResumeResult>()
+  const switchB = deferred<Record<string, unknown>>()
+  const { hook, requestGateway } = mount(activate.promise, [switchB.promise])
+
+  let pending!: Promise<void>
+  await act(async () => {
+    pending = hook.result.current.actions.resumeSession(storedId, true)
+  })
+  await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('session.activate', expect.anything()))
+
+  let pickB!: Promise<boolean>
+  act(() => {
+    pickB = hook.result.current.controls.selectModel({ ...B, sessionId: runtimeId })
+  })
+
+  // A@6 only changes A's effort; it must not erase pending B, but B's rollback restores it.
+  await act(async () => {
+    activate.resolve(activateSnapshot(A, 6, 'low'))
+    await pending
+  })
+  expect(cachedState(hook)).toMatchObject(B)
+
+  await act(async () => {
+    switchB.reject(new Error('provider rejected'))
+    await expect(pickB).resolves.toBe(false)
+  })
+
+  expect(cachedState(hook)).toMatchObject({ ...A, reasoningEffort: 'low', reasoningEffortWire: 'low' })
 })
