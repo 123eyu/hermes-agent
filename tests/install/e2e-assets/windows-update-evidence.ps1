@@ -9,6 +9,7 @@ param(
     [string]$OldInstallLocation = ''
 )
 $ErrorActionPreference = 'Continue'
+. (Join-Path $PSScriptRoot 'windows-process-records.ps1')
 $ours = [regex]::Escape($Identity) + '|msixbundle|appinstaller|127\.0\.0\.1'
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $packages = @(foreach ($name in 'Microsoft.DesktopAppInstaller', $Identity) {
@@ -38,31 +39,10 @@ try {
             }
         }
         $underPrefix -or ($exe -and $exe -match $processPattern) -or ($cmd -and $cmd -match $processPattern)
-    } | ForEach-Object {
-        $created = $null
-        if ($null -ne $_.PSObject.Properties['CreationDate'] -and $null -ne $_.CreationDate) {
-            $created = if ($_.CreationDate -is [datetime]) {
-                $_.CreationDate.ToUniversalTime().ToString('o')
-            } else {
-                [string]$_.CreationDate
-            }
-        }
-        [ordered]@{
-            ProcessId       = $_.ProcessId
-            ParentProcessId = if ($null -ne $_.PSObject.Properties['ParentProcessId']) { $_.ParentProcessId } else { $null }
-            Name            = if ($null -ne $_.PSObject.Properties['Name']) { $_.Name } else { $null }
-            CreationDate    = $created
-            ExecutablePath  = $_.ExecutablePath
-            CommandLine     = if ($null -ne $_.PSObject.Properties['CommandLine']) { $_.CommandLine } else { $null }
-        }
-    })
+    } | ForEach-Object { Format-ProcessRecord $_ })
     ConvertTo-Json -InputObject $matchedProcs -Depth 3 | Set-Content -LiteralPath (Join-Path $OutDir 'processes.json') -Encoding UTF8
     Write-Host "  [evidence] matching processes: $($matchedProcs.Count)"
-    foreach ($proc in $matchedProcs) {
-        $cmd = if ($null -ne $proc.CommandLine) { ($proc.CommandLine -replace '\s+', ' ').Trim() } else { '' }
-        if ($cmd.Length -gt 240) { $cmd = $cmd.Substring(0, 240) + '...' }
-        Write-Host "    pid=$($proc.ProcessId) ppid=$($proc.ParentProcessId) name=$($proc.Name) exe=$($proc.ExecutablePath) cmd=$cmd"
-    }
+    foreach ($proc in $matchedProcs) { Write-Host "    $(Format-ProcessLine $proc)" }
 } catch {
     $err = "could not read: $($_.Exception.Message)"
     Set-Content -LiteralPath (Join-Path $OutDir 'processes-error.txt') -Value $err -Encoding UTF8
