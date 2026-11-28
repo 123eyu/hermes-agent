@@ -36,7 +36,7 @@ def test_windows_bws_stages_pythons_vc_runtime_beside_bws(tmp_path, monkeypatch,
     monkeypatch.setattr(
         pm.install,
         "_installed_location",
-        lambda package, lockfile, t: ({"python": {"entry": "python-1"}}, store),
+        lambda package, lockfile, t, **kw: ({"python": {"entry": "python-1"}}, store),
     )
 
     staged = tmp_path / "scratch" / "tree"
@@ -53,37 +53,52 @@ def test_windows_bws_stages_pythons_vc_runtime_beside_bws(tmp_path, monkeypatch,
     assert bws.verify(staged, target) == ""
 
 
-@pytest.mark.parametrize("target,arch", [("win32-x64", "x64"), ("win32-arm64", "arm64")])
-def test_windows_bws_stages_vc_runtime_from_build_store_outside_runtime_dir(tmp_path, monkeypatch, target, arch):
-    empty_runtime = tmp_path / "ambient-runtime"
-    empty_runtime.mkdir()
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(empty_runtime))
-
-    build_store = Store(tmp_path / "build-store")
-    py_entry = build_store.entry("python-1")
-    py_entry.mkdir(parents=True)
-    (py_entry / "python.exe").write_bytes(_pe(arch))
-    (py_entry / "python3.exe").write_bytes(_pe(arch))
-    runtime = py_entry / "vcruntime140.dll"
-    runtime.write_bytes(_pe(arch))
-
+def _pin_python(tmp_path, monkeypatch, target: str) -> None:
     lock_path = tmp_path / "lock.json"
     lock = Lockfile(lock_path)
     lock.set_pin("python", "3.14.9+20261021", {target: [{"url": "https://example.invalid/py.tgz", "sha256": "a" * 64}]})
     lock.save()
     monkeypatch.setattr(paths, "lockfile_path", lambda: lock_path)
 
-    facts = Facts(build_store.root / "facts.json")
+
+def _record_python(store: Store, facts: Facts, target: str, arch: str, *, vc_runtime: bool) -> bytes | None:
+    """A pinned python entry with matching facts; returns its vcruntime140.dll bytes, if it has one."""
+    py_entry = store.entry("python-1")
+    py_entry.mkdir(parents=True)
+    (py_entry / "python.exe").write_bytes(_pe(arch))
+    (py_entry / "python3.exe").write_bytes(_pe(arch))
+    runtime = _pe(arch) + store.root.name.encode() if vc_runtime else None
+    if runtime is not None:
+        (py_entry / "vcruntime140.dll").write_bytes(runtime)
     facts.record(
         "python",
         "3.14.9+20261021",
         "python-1",
         {"PATH": [str(py_entry)]},
-        build_store.root,
+        store.root,
         target=target,
         artifacts=["a" * 64],
         digest=tree_digest(py_entry),
     )
+    return runtime
+
+
+@pytest.mark.parametrize("ambient_python", [False, True], ids=["empty-runtime", "runtime-python-without-dll"])
+@pytest.mark.parametrize("target,arch", [("win32-x64", "x64"), ("win32-arm64", "arm64")])
+def test_windows_bws_stages_vc_runtime_from_build_store_outside_runtime_dir(
+    tmp_path, monkeypatch, target, arch, ambient_python
+):
+    ambient_runtime = tmp_path / "ambient-runtime"
+    ambient_runtime.mkdir()
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(ambient_runtime))
+
+    _pin_python(tmp_path, monkeypatch, target)
+
+    if ambient_python:
+        # Pinned and recorded in the runtime store, but missing the DLL there.
+        _record_python(Store(paths.store_root()), Facts(paths.facts_path()), target, arch, vc_runtime=False)
+    build_store = Store(tmp_path / "build-store")
+    runtime = _record_python(build_store, Facts(build_store.root / "facts.json"), target, arch, vc_runtime=True)
 
     staged = tmp_path / "scratch" / "tree"
     staged.mkdir(parents=True)
@@ -91,7 +106,25 @@ def test_windows_bws_stages_vc_runtime_from_build_store_outside_runtime_dir(tmp_
 
     get_package("bws").stage(build_store, staged, "2.0.0", target)
 
-    assert (staged / "vcruntime140.dll").read_bytes() == runtime.read_bytes()
+    assert (staged / "vcruntime140.dll").read_bytes() == runtime
+
+
+@pytest.mark.parametrize("target,arch", [("win32-x64", "x64"), ("win32-arm64", "arm64")])
+def test_windows_bws_stages_vc_runtime_from_runtime_store_when_staging_store_has_no_python(
+    tmp_path, monkeypatch, target, arch
+):
+    # A sealed bundle installs bws into its writable store; python lives in the runtime store.
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "ambient-runtime"))
+    _pin_python(tmp_path, monkeypatch, target)
+    runtime = _record_python(Store(paths.store_root()), Facts(paths.facts_path()), target, arch, vc_runtime=True)
+
+    staged = tmp_path / "scratch" / "tree"
+    staged.mkdir(parents=True)
+    (staged / "bws.exe").write_bytes(_pe(arch))
+
+    get_package("bws").stage(Store(tmp_path / "writable-store"), staged, "2.0.0", target)
+
+    assert (staged / "vcruntime140.dll").read_bytes() == runtime
 
 
 def _probe_recorder(monkeypatch, target, outcome):

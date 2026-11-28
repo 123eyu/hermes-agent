@@ -1073,9 +1073,9 @@ def stage_python_vcruntime(package_name: str, store: Store, staged: Path, target
 
     python = get_package("python")
     lockfile = _lockfile()
-    location = _installed_location(python, lockfile, target)
-    if location is None and lockfile is not None:
-        location = _installed_location(python, lockfile, target, roots=(store.root,))
+    # The staging store's own python first: a bundle build verified it there, whatever the runtime store holds.
+    location = (_installed_location(python, lockfile, target, roots=(store.root,))
+                or _installed_location(python, lockfile, target))
     fact = location[0].get("python") if location is not None else None
     if fact is None:
         raise InstallError(
