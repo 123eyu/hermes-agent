@@ -542,4 +542,52 @@ describe('model pick preset ownership across overlapping picks', () => {
 
     h.queryClient.clear()
   })
+
+  it('applies the surviving pick preset when a newer pick is rejected first and the older pick then succeeds', async () => {
+    setModelPreset(B.provider, B.model, { effort: 'low' })
+    setModelPreset(C.provider, C.model, { effort: 'medium' })
+    const h = mountLiveEnvironment(5)
+
+    let pickB!: Promise<boolean | void>
+    let pickC!: Promise<boolean | void>
+
+    act(() => {
+      pickB = h.selectWithPreset(B)
+    })
+
+    act(() => {
+      pickC = h.selectWithPreset(C)
+    })
+
+    await act(async () => {
+      h.pendingModelReplies[1].reply.reject(new Error('revision_conflict'))
+      await expect(pickC).resolves.toBe(false)
+    })
+
+    // C's rollback lands on B, the pick still in flight, so B owns the surface again.
+    expect(PRIMARY_SESSION_VIEW.$model.get()).toBe(B.model)
+
+    h.owner.model = B.model
+    h.owner.provider = B.provider
+    h.owner.revision = 6
+    h.owner.generation = 3
+
+    await act(async () => {
+      h.pendingModelReplies[0].reply.resolve({
+        execution_generation: 3,
+        model: B.model,
+        operation: 'model',
+        provider: B.provider,
+        revision: 6,
+        session_id: h.sid
+      })
+      await expect(pickB).resolves.toBe(true)
+    })
+
+    await waitFor(() => expect(h.owner.effort).toBe('low'))
+    expect(PRIMARY_SESSION_VIEW.$reasoningEffort.get()).toBe('low')
+    expect(h.mutations.filter(m => m.operation === 'reasoning').map(m => m.payload)).toEqual([{ effort: 'low' }])
+
+    h.queryClient.clear()
+  })
 })

@@ -482,6 +482,7 @@ function settleAppliedPick(
 }
 
 function settleUnappliedPick(
+  pickKey: string,
   picks: SessionPicks,
   settled: PendingPick,
   auth: AuthoritativeModelState | undefined
@@ -493,13 +494,16 @@ function settleUnappliedPick(
   )
 
   if (activePending.length > 0) {
-    const target = activePending.at(-1)!.painted
+    const survivor = activePending.at(-1)!
+    const target = survivor.painted
 
     if (target === picks.shown) {
       return { kind: 'keep' }
     }
 
     picks.shown = target
+    // The surface is back on the surviving pick, so its trailing preset owns it again.
+    pickEpochBySession.set(pickKey, survivor.token)
 
     return { kind: 'rollback', snapshot: target }
   }
@@ -541,7 +545,7 @@ export function settleModelPick(
 
   const outcome = applied
     ? settleAppliedPick(picks, settled, auth, options?.receipt)
-    : settleUnappliedPick(picks, settled, auth)
+    : settleUnappliedPick(pickKey, picks, settled, auth)
 
   if (picks.pending.length === 0) {
     picksBySession.delete(pickKey)
