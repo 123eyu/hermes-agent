@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $modelPresets, applyModelPreset, getModelPreset, setModelPreset } from './model-presets'
 import {
@@ -9,6 +9,7 @@ import {
   setCurrentReasoningEffort,
   setCurrentServiceTier
 } from './session'
+import { type SessionTileDelegate, setSessionTileDelegate } from './session-states'
 
 describe('model presets', () => {
   beforeEach(() => {
@@ -93,5 +94,42 @@ describe('model presets', () => {
     expect($currentReasoningEffort.get()).toBe('high')
     expect($currentFastMode.get()).toBe(true)
     expect(calls).toEqual([])
+  })
+
+  it('does not paint globals or session slice when isCurrent is already false', async () => {
+    const calls: unknown[] = []
+
+    const request = async <T>(method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      return {} as T
+    }
+
+    const updateSession = vi.fn()
+    setSessionTileDelegate({ updateSession } as unknown as SessionTileDelegate)
+
+    try {
+      setCurrentReasoningEffort('high')
+      setCurrentFastMode(false)
+      setCurrentServiceTier('normal')
+
+      await applyModelPreset(
+        { effort: 'low', fast: true, serviceTier: 'priority' },
+        {
+          failMessage: 'x',
+          isCurrent: () => false,
+          request,
+          sessionId: 's1'
+        }
+      )
+
+      expect($currentReasoningEffort.get()).toBe('high')
+      expect($currentFastMode.get()).toBe(false)
+      expect($currentServiceTier.get()).toBe('normal')
+      expect(updateSession).not.toHaveBeenCalled()
+      expect(calls).toEqual([])
+    } finally {
+      setSessionTileDelegate(null as unknown as SessionTileDelegate)
+    }
   })
 })

@@ -29,8 +29,10 @@ export interface SurfaceModelSwitchConfirmOptions<T extends GuardedModelSwitchRe
   repaint?: () => void
   /** Resend the switch WITH `confirm_expensive_model: true`. */
   requestConfirmed: () => Promise<T | undefined>
-  /** Undo the optimistic repaint when the confirmed resend fails. */
-  rollback?: () => void
+  /** Undo the optimistic repaint when the confirmed resend fails. Return
+   *  `'confirmed'` when an authoritative server event already confirmed this
+   *  exact switch despite the RPC timeout. */
+  rollback?: (err: unknown) => 'confirmed' | void
 }
 
 /**
@@ -89,8 +91,9 @@ export async function surfaceModelSwitchConfirm<T extends GuardedModelSwitchResu
 
     return true
   } catch (err) {
-    options.rollback?.()
-    notifyError(err, options.failureMessage)
+    if (options.rollback?.(err) !== 'confirmed') {
+      notifyError(err, options.failureMessage)
+    }
 
     return false
   }

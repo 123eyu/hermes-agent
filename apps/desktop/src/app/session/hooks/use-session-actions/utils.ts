@@ -6,11 +6,11 @@ import {
   assistantTextPart,
   type ChatMessage,
   chatMessageText,
+  type GatewayEventPayload,
   preserveLocalAssistantErrors,
   textPart,
   toChatMessages
 } from '@/lib/chat-messages'
-import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { parseErrorSurface } from '@/lib/error-surface'
 import { isMessagingSource, normalizeSessionSource } from '@/lib/session-source'
@@ -65,6 +65,7 @@ import { reportBackendContract, reportInstallMethodWarning } from '@/store/updat
 import type { SessionCreateResponse, SessionInfo, SessionResumeResult, SessionRuntimeInfo } from '@/types/hermes'
 
 import type { ClientSessionState } from '../../../types'
+import { sessionInfoStatePatch } from '../use-message-stream/utils'
 
 import {
   committedReplyCovers,
@@ -2104,11 +2105,13 @@ type SessionRuntimeStatePatch = Partial<
     | 'cwd'
     | 'fast'
     | 'model'
+    | 'modelRevision'
     | 'personality'
     | 'provider'
     | 'reasoningEffort'
     | 'reasoningEffortPending'
     | 'reasoningEffortWire'
+    | 'revision'
     | 'serviceTier'
     | 'usage'
     | 'yolo'
@@ -2217,52 +2220,10 @@ export function applyRuntimeInfo(
 
   reportRuntimeInfoAppState(info, owner)
 
-  const sessionState: SessionRuntimeStatePatch = {}
-
-  if (typeof info.model === 'string') {
-    sessionState.model = info.model
-  }
-
-  if (typeof info.provider === 'string') {
-    sessionState.provider = info.provider
-  }
-
-  // Empty string is authoritative, not "no opinion": a detached/bare session
-  // reports `cwd: ''`, and the truthy-only test left `$currentCwd` — and so the
-  // Files pane — pinned to the PREVIOUS project for the rest of the session
-  // (#71254). Empty is routed through ownership release below rather than
-  // persisted, so the pane hides a path it no longer owns instead of blanking.
-  if (typeof info.cwd === 'string') {
-    sessionState.cwd = info.cwd
-  }
+  const sessionState: SessionRuntimeStatePatch = sessionInfoStatePatch(info as GatewayEventPayload)
 
   if (info.branch !== undefined) {
     sessionState.branch = info.branch || ''
-  }
-
-  if (typeof info.personality === 'string') {
-    sessionState.personality = normalizePersonalityValue(info.personality)
-  }
-
-  if (typeof info.reasoning_effort === 'string') {
-    sessionState.reasoningEffort = info.reasoning_effort
-    sessionState.reasoningEffortPending = false
-  }
-
-  if (typeof info.reasoning_effort_wire === 'string') {
-    sessionState.reasoningEffortWire = info.reasoning_effort_wire
-  }
-
-  if (typeof info.service_tier === 'string') {
-    sessionState.serviceTier = info.service_tier
-  }
-
-  if (typeof info.fast === 'boolean') {
-    sessionState.fast = info.fast
-  }
-
-  if (typeof info.yolo === 'boolean') {
-    sessionState.yolo = info.yolo
   }
 
   if (info.usage) {

@@ -75,6 +75,36 @@ export function setModelPreset(provider: string, model: string, patch: ModelPres
   persistString(STORAGE_KEY, JSON.stringify(next))
 }
 
+function rollbackPresetDimension(
+  dimension: 'effort' | 'speed',
+  confirmed: ModelPreset,
+  attempted: { effort?: string; tier?: string },
+  scope: { oldOwner: null | string; primary: boolean; sessionId: null | string }
+): void {
+  if (scope.primary && $activeSessionId.get() === scope.oldOwner) {
+    if (dimension === 'effort' && $currentReasoningEffort.get() === attempted.effort) {
+      setCurrentReasoningEffort(confirmed.effort ?? '')
+    } else if (dimension === 'speed' && $currentServiceTier.get() === attempted.tier) {
+      setCurrentFastMode(confirmed.fast ?? false)
+      setCurrentServiceTier(confirmed.serviceTier ?? '')
+    }
+  }
+
+  if (scope.sessionId && (!scope.primary || $activeSessionId.get() === scope.oldOwner)) {
+    sessionTileDelegate()?.updateSession(scope.sessionId, state => {
+      if (dimension === 'effort' && state.reasoningEffort === attempted.effort) {
+        return { ...state, reasoningEffort: confirmed.effort ?? '', reasoningEffortWire: '' }
+      }
+
+      if (dimension === 'speed' && state.serviceTier === attempted.tier) {
+        return { ...state, fast: confirmed.fast ?? false, serviceTier: confirmed.serviceTier ?? '' }
+      }
+
+      return state
+    })
+  }
+}
+
 /** Apply a model's preset to the composer, then push it to a live session.
  *  `undefined` skips that dimension; values are capability-gated upstream.
  *  Without a session the local draft still needs the preset, but must not call
@@ -112,25 +142,27 @@ export async function applyModelPreset(
         }
 
   const writeKey = (dimension: string) => `${ctx.scope ?? ''}::${ctx.sessionId}::${dimension}`
+  const applyEffort = effort !== undefined && ctx.isCurrent?.('effort') !== false
+  const applySpeed = fast !== undefined && ctx.isCurrent?.('speed') !== false
 
   if (primary) {
-    if (effort !== undefined) {
+    if (applyEffort) {
       setCurrentReasoningEffort(effort)
     }
 
-    if (fast !== undefined) {
+    if (applySpeed) {
       setCurrentFastMode(fast)
       setCurrentServiceTier(tier!)
     }
   }
 
-  if (ctx.sessionId) {
+  if (ctx.sessionId && (applyEffort || applySpeed)) {
     sessionTileDelegate()?.updateSession(ctx.sessionId, state => ({
       ...state,
       // Like setCurrentReasoningEffort: the wire level belongs to the previous
       // effort, so it stays unknown until the next session.info re-stamps it.
-      ...(effort !== undefined ? { reasoningEffort: effort, reasoningEffortWire: '' } : {}),
-      ...(fast !== undefined ? { fast, serviceTier: tier! } : {})
+      ...(applyEffort ? { reasoningEffort: effort, reasoningEffortWire: '' } : {}),
+      ...(applySpeed ? { fast, serviceTier: tier! } : {})
     }))
   }
 
@@ -143,11 +175,11 @@ export async function applyModelPreset(
   await Promise.all(
     (
       [
-        ['effort', effort],
-        ['speed', tier]
+        ['effort', applyEffort ? effort : undefined],
+        ['speed', applySpeed ? tier : undefined]
       ] as const
     ).map(async ([dimension, value]) => {
-      if (value === undefined || ctx.isCurrent?.(dimension) === false) {
+      if (value === undefined) {
         return
       }
 
@@ -169,6 +201,10 @@ export async function applyModelPreset(
         write = Promise.resolve(preceding)
           .catch(() => {})
           .then(async () => {
+            if (ctx.isCurrent?.(dimension) === false) {
+              return
+            }
+
             await ctx.request('config.set', {
               key: dimension === 'effort' ? 'reasoning' : 'fast',
               session_id: ctx.sessionId,
@@ -191,28 +227,12 @@ export async function applyModelPreset(
         ctx.onFailure?.(dimension, confirmed)
 
         if (ctx.isCurrent?.(dimension) ?? true) {
-          if (primary && $activeSessionId.get() === oldOwner) {
-            if (dimension === 'effort' && $currentReasoningEffort.get() === effort) {
-              setCurrentReasoningEffort(confirmed.effort ?? '')
-            } else if (dimension === 'speed' && $currentServiceTier.get() === tier) {
-              setCurrentFastMode(confirmed.fast ?? false)
-              setCurrentServiceTier(confirmed.serviceTier ?? '')
-            }
-          }
-
-          if (ctx.sessionId && (!primary || $activeSessionId.get() === oldOwner)) {
-            sessionTileDelegate()?.updateSession(ctx.sessionId, state => {
-              if (dimension === 'effort' && state.reasoningEffort === effort) {
-                return { ...state, reasoningEffort: confirmed.effort ?? '', reasoningEffortWire: '' }
-              }
-
-              if (dimension === 'speed' && state.serviceTier === tier) {
-                return { ...state, fast: confirmed.fast ?? false, serviceTier: confirmed.serviceTier ?? '' }
-              }
-
-              return state
-            })
-          }
+          rollbackPresetDimension(
+            dimension,
+            confirmed,
+            { effort, tier },
+            { oldOwner, primary, sessionId: ctx.sessionId }
+          )
         }
 
         notifyError(err, ctx.failMessage)

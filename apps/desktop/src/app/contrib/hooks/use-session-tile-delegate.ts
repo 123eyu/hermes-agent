@@ -36,9 +36,10 @@ import {
   sessionTileOwnerRoute,
   setSessionTileDelegate
 } from '@/store/session-states'
-import type { SessionResumeResult } from '@/types/hermes'
+import type { SessionResumeResult, SessionRuntimeInfo } from '@/types/hermes'
 
 import { refreshCronRunWriteGate } from '../../cron/open-cron-run'
+import { monotonicRevision } from '../../session/hooks/use-message-stream/utils'
 import type { usePromptActions } from '../../session/hooks/use-prompt-actions'
 import { singleFlightSessionResume } from '../../session/hooks/use-prompt-actions/single-flight-resume'
 import { markSessionRecentlyInterrupted, withSessionNotFoundResume } from '../../session/hooks/use-prompt-actions/utils'
@@ -73,6 +74,35 @@ function tileRestScope(owner: SessionOwnerScope) {
   return owner && typeof owner === 'object'
     ? { connectionId: owner.connectionId, profile: owner.targetProfile || owner.profile }
     : owner
+}
+
+function tileResumeRuntimeFields(info: SessionRuntimeInfo | undefined, state: ClientSessionState) {
+  if (!info) {
+    return {}
+  }
+
+  const incomingRev = typeof info.revision === 'number' ? info.revision : undefined
+
+  if (incomingRev !== undefined && state.revision !== undefined && incomingRev < state.revision) {
+    return {}
+  }
+
+  const revision = monotonicRevision(state.revision, incomingRev)
+  const hasRoute = typeof info.model === 'string' || typeof info.provider === 'string'
+  const modelRevision = hasRoute ? monotonicRevision(state.modelRevision, incomingRev) : state.modelRevision
+
+  return {
+    ...(typeof info.fast === 'boolean' ? { fast: info.fast } : {}),
+    ...(typeof info.model === 'string' ? { model: info.model } : {}),
+    ...(typeof info.provider === 'string' ? { provider: info.provider } : {}),
+    ...(typeof info.reasoning_effort === 'string'
+      ? { reasoningEffort: info.reasoning_effort, reasoningEffortPending: false }
+      : {}),
+    ...(typeof info.reasoning_effort_wire === 'string' ? { reasoningEffortWire: info.reasoning_effort_wire } : {}),
+    ...(typeof info.service_tier === 'string' ? { serviceTier: info.service_tier } : {}),
+    ...(revision !== undefined ? { revision } : {}),
+    ...(modelRevision !== undefined ? { modelRevision } : {})
+  }
 }
 
 /** A cached binding still carrying this session's transcript (or mid-turn). */
@@ -567,15 +597,7 @@ export function useSessionTileDelegate({
             return {
               // The deferred build reports the session's own effort later (#79807).
               ...markReasoningEffortPending(state),
-              ...(typeof info?.fast === 'boolean' ? { fast: info.fast } : {}),
-              ...(typeof info?.model === 'string' ? { model: info.model } : {}),
-              ...(typeof info?.provider === 'string' ? { provider: info.provider } : {}),
-              ...(typeof info?.reasoning_effort === 'string'
-                ? { reasoningEffort: info.reasoning_effort, reasoningEffortPending: false }
-                : {}),
-              ...(typeof info?.reasoning_effort_wire === 'string'
-                ? { reasoningEffortWire: info.reasoning_effort_wire }
-                : {}),
+              ...tileResumeRuntimeFields(info, state),
               awaitingResponse: running && !resumed.inflight?.assistant,
               busy: running,
               messages

@@ -1193,3 +1193,73 @@ describe('useSessionTileDelegate read-only cron run (#88443)', () => {
     expect($notifications.get().some(note => note.kind === 'info')).toBe(false)
   })
 })
+
+describe('resumeTile revision fence', () => {
+  it('does not let a delayed lower-revision tile resume overwrite a newer event route while preserving transcript', async () => {
+    setSessions([row({ id: 'stored-stale-resume', profile: 'default' })])
+
+    const newerState = {
+      ...createClientSessionState('stored-stale-resume', []),
+      fast: false,
+      model: 'model-new',
+      modelRevision: 7,
+      provider: 'provider-new',
+      reasoningEffort: 'high',
+      reasoningEffortWire: 'high',
+      revision: 7
+    }
+
+    const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-stale-resume', 'runtime-stale-resume']]) }
+
+    const states = {
+      current: new Map<string, ReturnType<typeof createClientSessionState>>([['runtime-stale-resume', newerState]])
+    }
+
+    const update = vi.fn(
+      (
+        id: string,
+        updater: (state: ReturnType<typeof createClientSessionState>) => ReturnType<typeof createClientSessionState>
+      ) => {
+        const next = updater(states.current.get(id) ?? createClientSessionState('stored-stale-resume', []))
+        states.current.set(id, next)
+
+        return next
+      }
+    )
+
+    $sessionTiles.set([{ runtimeId: 'runtime-stale-resume', storedSessionId: 'stored-stale-resume' }] as never)
+    vi.mocked(requestGatewayForProfile).mockResolvedValueOnce({
+      info: {
+        fast: true,
+        model: 'model-old',
+        provider: 'provider-old',
+        reasoning_effort: 'low',
+        reasoning_effort_wire: 'low',
+        revision: 5
+      },
+      messages: [{ content: 'persisted reply', role: 'assistant' }],
+      resumed: 'stored-stale-resume',
+      running: false,
+      session_id: 'runtime-stale-resume'
+    } as never)
+
+    renderTile(vi.fn() as never, {
+      runtimeIdByStoredSessionIdRef,
+      sessionStateByRuntimeIdRef: states as never,
+      updateSessionState: update as never
+    })
+
+    await sessionTileDelegate()!.resumeTile('stored-stale-resume', { authoritativeSnapshot: true })
+
+    expect(states.current.get('runtime-stale-resume')).toMatchObject({
+      fast: false,
+      model: 'model-new',
+      modelRevision: 7,
+      provider: 'provider-new',
+      reasoningEffort: 'high',
+      reasoningEffortWire: 'high',
+      revision: 7
+    })
+    expect(states.current.get('runtime-stale-resume')?.messages).toHaveLength(1)
+  })
+})

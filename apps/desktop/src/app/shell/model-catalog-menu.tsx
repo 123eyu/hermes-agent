@@ -1,12 +1,5 @@
 import type { ModelOptionProvider, ModelOptionsResult, ModelPricing } from '@hermes/shared'
-import {
-  DEFAULT_REASONING_EFFORT,
-  planBlocks,
-  sectionAt,
-  splitRecommended,
-  usageLevel,
-  usageTag
-} from '@hermes/shared'
+import { DEFAULT_REASONING_EFFORT, planBlocks, sectionAt, splitRecommended, usageLevel, usageTag } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import {
@@ -165,12 +158,16 @@ export interface ModelMenuController {
    *  need to batch it. Values are already capability-gated by the menu. */
   applyPreset: (
     preset: { effort?: string; fast?: boolean; serviceTier?: string },
-    row: { model: string; provider: string }
+    row: { model: string; provider: string },
+    pickToken?: number
   ) => void
+  /** Allocate an ownership token for a model pick so its trailing applyPreset
+   *  can verify no newer pick started on the same surface while it was in flight. */
+  beginSelect?: () => number
   current: ModelChoice
   presetFor: (provider: string, model: string) => { effort?: string; fast?: boolean; serviceTier?: string }
   /** Commit a model row. Return false to abort (a failed session switch). */
-  select: (model: string, provider: string) => Promise<boolean | void> | void
+  select: (model: string, provider: string, pickToken?: number) => Promise<boolean | void> | void
   /** Edit ONE option on a row. `isActive` says whether it's the current model. */
   setOptions: (
     patch: { effort?: string; fast?: boolean; serviceTier?: string },
@@ -441,8 +438,9 @@ export function ModelCatalogMenu({
     // is applied through setOptions below instead.
     const variantFast = !(caps?.fast ?? false) && !!family.fastId
     const targetId = variantFast && preset.fast === true ? family.fastId! : family.id
+    const pickToken = controller.beginSelect?.()
 
-    if ((await controller.select(targetId, provider.slug)) === false) {
+    if ((await controller.select(targetId, provider.slug, pickToken)) === false) {
       return false
     }
 
@@ -462,7 +460,8 @@ export function ModelCatalogMenu({
         effort: (caps?.reasoning ?? true) ? (preset.effort ?? defaultEffort) : undefined,
         ...(controller.allowSpeed !== false ? { serviceTier: tier, fast: tier !== 'normal' } : {})
       },
-      { model: family.id, provider: provider.slug }
+      { model: family.id, provider: provider.slug },
+      pickToken
     )
 
     return true
@@ -1480,7 +1479,10 @@ function nousPricingPoll(data: ModelOptionsResult | undefined, updates: number):
 // current-model pin above, so a pinned custom model lands under "Other models" instead of taking the
 // first pick's "Recommended" heading.
 function recommendedFirst(provider: ModelOptionProvider, families: ModelFamily[]): ModelFamily[] {
-  const split = splitRecommended(provider, families.map(family => family.id))
+  const split = splitRecommended(
+    provider,
+    families.map(family => family.id)
+  )
 
   if (!split) {
     return families

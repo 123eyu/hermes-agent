@@ -157,6 +157,8 @@ export interface ClientSessionState {
   cwd: string
   model: string
   provider: string
+  revision?: number
+  modelRevision?: number
   reasoningEffort: string
   /** Gateway-reported wire level for `reasoningEffort`; '' until the backend
    *  has stamped the current pick (so a clamp is never inferred client-side). */

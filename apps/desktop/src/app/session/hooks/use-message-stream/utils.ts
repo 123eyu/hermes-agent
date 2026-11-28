@@ -5,22 +5,32 @@ import { isTodoToolName } from '@/lib/todos'
 
 import type { ClientSessionState } from '../../../types'
 
-type SessionRuntimeStatePatch = Partial<
+export type SessionRuntimeStatePatch = Partial<
   Pick<
     ClientSessionState,
     | 'branch'
     | 'cwd'
     | 'fast'
     | 'model'
+    | 'modelRevision'
     | 'personality'
     | 'provider'
     | 'reasoningEffort'
     | 'reasoningEffortPending'
     | 'reasoningEffortWire'
+    | 'revision'
     | 'serviceTier'
     | 'yolo'
   >
 >
+
+export function monotonicRevision(current: number | undefined, next: number | undefined): number | undefined {
+  if (typeof next !== 'number') {
+    return current
+  }
+
+  return current === undefined || next > current ? next : current
+}
 
 export function sessionInfoStatePatch(payload: GatewayEventPayload | undefined): SessionRuntimeStatePatch {
   const patch: SessionRuntimeStatePatch = {}
@@ -31,6 +41,14 @@ export function sessionInfoStatePatch(payload: GatewayEventPayload | undefined):
 
   if (typeof payload?.provider === 'string') {
     patch.provider = payload.provider || ''
+  }
+
+  if (typeof payload?.revision === 'number') {
+    patch.revision = payload.revision
+
+    if (typeof payload?.model === 'string' || typeof payload?.provider === 'string') {
+      patch.modelRevision = payload.revision
+    }
   }
 
   if (typeof payload?.cwd === 'string') {
@@ -73,6 +91,31 @@ export function hasSessionInfoStatePatch(patch: SessionRuntimeStatePatch): boole
   return Object.keys(patch).length > 0
 }
 
+const SESSION_INFO_PATCH_KEYS = [
+  'branch',
+  'cwd',
+  'fast',
+  'model',
+  'personality',
+  'provider',
+  'reasoningEffort',
+  'reasoningEffortWire',
+  'serviceTier',
+  'yolo'
+] as const
+
+function sessionInfoFieldsUnchanged(state: ClientSessionState, patch: SessionRuntimeStatePatch): boolean {
+  for (const key of SESSION_INFO_PATCH_KEYS) {
+    if (patch[key] !== undefined && patch[key] !== state[key]) {
+      return false
+    }
+  }
+
+  return (
+    patch.reasoningEffortPending === undefined || patch.reasoningEffortPending === Boolean(state.reasoningEffortPending)
+  )
+}
+
 /** Keep the runtime-state object when a heartbeat only restates cached fields.
  *  `$sessionStates` feeds every mounted session surface, so an equivalent spread
  *  re-renders them all at the heartbeat cadence. */
@@ -80,26 +123,23 @@ export function applySessionInfoStatePatch(
   state: ClientSessionState,
   patch: SessionRuntimeStatePatch
 ): ClientSessionState {
+  const revision = monotonicRevision(state.revision, patch.revision)
+  const modelRevision = monotonicRevision(state.modelRevision, patch.modelRevision)
+
   if (
-    (patch.branch === undefined || patch.branch === state.branch) &&
-    (patch.cwd === undefined || patch.cwd === state.cwd) &&
-    (patch.fast === undefined || patch.fast === state.fast) &&
-    (patch.model === undefined || patch.model === state.model) &&
-    (patch.personality === undefined || patch.personality === state.personality) &&
-    (patch.provider === undefined || patch.provider === state.provider) &&
-    (patch.reasoningEffort === undefined || patch.reasoningEffort === state.reasoningEffort) &&
-    // The wire level can change alone: an optimistic paint already holds the new
-    // model/effort, so skipping here kept the previous route's clamp ("Medium→Max") forever.
-    (patch.reasoningEffortWire === undefined || patch.reasoningEffortWire === state.reasoningEffortWire) &&
-    (patch.reasoningEffortPending === undefined ||
-      patch.reasoningEffortPending === Boolean(state.reasoningEffortPending)) &&
-    (patch.serviceTier === undefined || patch.serviceTier === state.serviceTier) &&
-    (patch.yolo === undefined || patch.yolo === state.yolo)
+    revision === state.revision &&
+    modelRevision === state.modelRevision &&
+    sessionInfoFieldsUnchanged(state, patch)
   ) {
     return state
   }
 
-  return { ...state, ...patch }
+  return {
+    ...state,
+    ...patch,
+    ...(revision !== undefined ? { revision } : {}),
+    ...(modelRevision !== undefined ? { modelRevision } : {})
+  }
 }
 
 // Minimum gap between two assistant-text flushes during a stream. Was 16ms

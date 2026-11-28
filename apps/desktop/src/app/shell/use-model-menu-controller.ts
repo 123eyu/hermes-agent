@@ -5,6 +5,12 @@ import { atom } from 'nanostores'
 import { useCallback, useEffect, useRef } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
+import {
+  bumpModelPickEpoch,
+  currentModelPickEpoch,
+  modelPickKey,
+  readReconciledPickRoute
+} from '@/app/session/hooks/model-pick-ledger'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
@@ -26,6 +32,8 @@ import type { ModelMenuController } from './model-catalog-menu'
 
 const UNKNOWN_SERVICE_TIER = atom('')
 const optionEdits = new Map<string, symbol>()
+const selectCallEpochs = new Map<number, number>()
+let nextSelectCallId = 0
 
 const nextEdit = (key: string) => {
   const revision = Symbol(key)
@@ -130,7 +138,28 @@ export function useModelMenuController({
     }
   }, [daybreakListed, ownerConnectionId, profile])
 
-  const patchPreset = (patch: ModelPreset, row: { model: string; provider: string }, failMessage: string) => {
+  const pickLedgerKey = modelPickKey(activeSessionId || 'draft', ownerConnectionId, profile)
+
+  const matchesSurface = (route: { model: string; provider: string }) =>
+    latestHostScope.current === hostScope &&
+    view.$runtimeId.get() === activeSessionId &&
+    (!view.$model.get() || view.$model.get().replace(/-fast$/, '') === route.model.replace(/-fast$/, '')) &&
+    (!view.$provider.get() || view.$provider.get() === route.provider)
+
+  const resolvedSurfaceRoute = (row: { model: string; provider: string }) =>
+    activeSessionId
+      ? (readReconciledPickRoute(modelPickKey(activeSessionId, ownerConnectionId, profile), row) ?? row)
+      : row
+
+  const patchPreset = (
+    patch: ModelPreset,
+    row: { model: string; provider: string },
+    failMessage: string,
+    guard?: { pickEpoch?: number; surfaceRoute: { model: string; provider: string } }
+  ) => {
+    const surfaceRoute = guard?.surfaceRoute ?? resolvedSurfaceRoute(row)
+    const pickEpoch = guard?.pickEpoch
+
     const dimensions = [
       ...(patch.effort !== undefined ? ['effort' as const] : []),
       ...(modelPresetServiceTier(patch) !== undefined ? ['speed' as const] : [])
@@ -175,10 +204,8 @@ export function useModelMenuController({
 
         return (
           optionEdits.get(stamp.ownerKey) === stamp.owner &&
-          latestHostScope.current === hostScope &&
-          view.$runtimeId.get() === activeSessionId &&
-          (!view.$model.get() || view.$model.get().replace(/-fast$/, '') === row.model) &&
-          (!view.$provider.get() || view.$provider.get() === row.provider)
+          (pickEpoch === undefined || currentModelPickEpoch(pickLedgerKey) === pickEpoch) &&
+          matchesSurface(surfaceRoute)
         )
       },
       onFailure: (dimension, confirmed) => {
@@ -217,7 +244,28 @@ export function useModelMenuController({
   const controller: ModelMenuController = {
     // Selecting a model row restores that model's remembered preset onto the
     // session (effort/fast). applyModelPreset owns the batched gateway write.
-    applyPreset: (preset, row) => patchPreset(preset, row, t.shell.modelOptions.updateFailed),
+    applyPreset: (preset, row, pickToken) => {
+      let pickEpoch: number | undefined
+
+      if (pickToken !== undefined) {
+        pickEpoch = selectCallEpochs.get(pickToken)
+        selectCallEpochs.delete(pickToken)
+
+        if (pickEpoch === undefined || currentModelPickEpoch(pickLedgerKey) !== pickEpoch) {
+          return
+        }
+      }
+
+      const surfaceRoute = resolvedSurfaceRoute(row)
+
+      if (!matchesSurface(surfaceRoute)) {
+        return
+      }
+
+      patchPreset(preset, row, t.shell.modelOptions.updateFailed, { pickEpoch, surfaceRoute })
+    },
+
+    beginSelect: () => ++nextSelectCallId,
 
     current: {
       effort: currentReasoningEffort,
@@ -246,8 +294,36 @@ export function useModelMenuController({
     // scopes the switch to that session; with none it's UI state shipped on the
     // next session.create. Always stamp sessionId from this surface so a tile
     // switch never hits the primary (busy) session by accident.
-    select: (model, provider) => {
-      return onSelectModel({ model, provider, sessionId: activeSessionId || null })
+    select: (model, provider, pickToken) => {
+      const beforeEpoch = currentModelPickEpoch(pickLedgerKey)
+      const pending = onSelectModel({ model, provider, sessionId: activeSessionId || null })
+      const afterEpoch = currentModelPickEpoch(pickLedgerKey)
+      const epoch = afterEpoch !== beforeEpoch ? afterEpoch : bumpModelPickEpoch(pickLedgerKey)
+
+      if (pickToken !== undefined) {
+        selectCallEpochs.set(pickToken, epoch)
+      }
+
+      if (!pending || typeof pending.then !== 'function') {
+        return pending
+      }
+
+      return pending.then(
+        applied => {
+          if (applied === false && pickToken !== undefined) {
+            selectCallEpochs.delete(pickToken)
+          }
+
+          return applied
+        },
+        err => {
+          if (pickToken !== undefined) {
+            selectCallEpochs.delete(pickToken)
+          }
+
+          throw err
+        }
+      )
     },
 
     setOptions: (patch, row) => {

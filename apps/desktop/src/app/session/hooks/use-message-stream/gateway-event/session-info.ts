@@ -34,11 +34,20 @@ import {
 } from '@/store/session'
 import { reportInstallMethodWarning } from '@/store/updates'
 
+import type { ClientSessionState } from '../../../../types'
+import {
+  modelPickKey,
+  noteAuthoritativeModel,
+  noteHeldConfirmedPolicy,
+  shouldHoldBackSessionInfoModel
+} from '../../model-pick-ledger'
 import {
   applySessionInfoStatePatch,
   hasSessionInfoStatePatch,
+  monotonicRevision,
   PRE_TURN_LIVE_SETTLE_GRACE_MS,
-  sessionInfoStatePatch
+  sessionInfoStatePatch,
+  type SessionRuntimeStatePatch
 } from '../utils'
 
 import { payTurnEndReport, runningEdge } from './turn-end-report'
@@ -154,14 +163,170 @@ function reconcileSessionInfoPendingSubmissions(ctx: GatewayEventContext): void 
   }
 }
 
+interface SessionInfoModelPatchResult {
+  hasStatePatch: boolean
+  holdModel: boolean
+  invalidateModelOptions: boolean
+  staleRevision: boolean
+  statePatch: SessionRuntimeStatePatch
+}
+
+const STALE_REVISION_PATCH_KEYS: readonly (keyof SessionRuntimeStatePatch)[] = [
+  'model',
+  'provider',
+  'modelRevision',
+  'revision',
+  'reasoningEffort',
+  'reasoningEffortPending',
+  'reasoningEffortWire',
+  'fast',
+  'serviceTier'
+]
+
+const HELD_MODEL_PATCH_KEYS: readonly (keyof SessionRuntimeStatePatch)[] = [
+  'model',
+  'provider',
+  'modelRevision',
+  'reasoningEffort',
+  'reasoningEffortPending',
+  'reasoningEffortWire',
+  'fast',
+  'serviceTier'
+]
+
+function stripPatchKeys(patch: SessionRuntimeStatePatch, keys: readonly (keyof SessionRuntimeStatePatch)[]): void {
+  for (const key of keys) {
+    delete patch[key]
+  }
+}
+
+function sessionInfoRouteChanged(
+  incomingModel: string | undefined,
+  incomingProvider: string | undefined,
+  knownState: ClientSessionState | undefined
+): boolean {
+  const currentModel = knownState?.model ?? $currentModel.get()
+  const currentProvider = knownState?.provider ?? $currentProvider.get()
+
+  return (
+    (incomingModel !== undefined && incomingModel !== currentModel) ||
+    (incomingProvider !== undefined && incomingProvider !== currentProvider)
+  )
+}
+
+function recordAuthoritativeSessionInfo(
+  pickKey: string,
+  payload: GatewayEventContext['payload'],
+  knownState: ClientSessionState | undefined,
+  revision: number
+): void {
+  const incomingModel = typeof payload?.model === 'string' ? payload.model : undefined
+  const incomingProvider = typeof payload?.provider === 'string' ? payload.provider : undefined
+
+  if (incomingModel === undefined && incomingProvider === undefined) {
+    return
+  }
+
+  noteAuthoritativeModel(pickKey, {
+    model: incomingModel ?? knownState?.model ?? '',
+    provider: incomingProvider ?? knownState?.provider ?? '',
+    reasoningEffortWire: typeof payload?.reasoning_effort_wire === 'string' ? payload.reasoning_effort_wire : undefined,
+    revision
+  })
+}
+
+function recordHeldSessionInfoPolicy(
+  pickKey: string,
+  payload: GatewayEventContext['payload'],
+  revision: number | undefined
+): void {
+  if (revision === undefined) {
+    return
+  }
+
+  noteHeldConfirmedPolicy(
+    pickKey,
+    revision,
+    {
+      ...(typeof payload?.fast === 'boolean' ? { fast: payload.fast } : {}),
+      ...(typeof payload?.reasoning_effort === 'string' ? { reasoningEffort: payload.reasoning_effort } : {}),
+      ...(typeof payload?.reasoning_effort_wire === 'string'
+        ? { reasoningEffortWire: payload.reasoning_effort_wire }
+        : {}),
+      ...(typeof payload?.service_tier === 'string' ? { serviceTier: payload.service_tier } : {})
+    },
+    {
+      model: typeof payload?.model === 'string' ? payload.model : undefined,
+      provider: typeof payload?.provider === 'string' ? payload.provider : undefined
+    }
+  )
+}
+
+/** Fence model/policy fields on `session.info` against stale revisions and
+ *  in-flight optimistic model picks, and record newer authoritative routes. */
+function resolveSessionInfoModelPatch(
+  ctx: GatewayEventContext,
+  knownState: ClientSessionState | undefined
+): SessionInfoModelPatchResult {
+  const { event, fromActiveSource, payload, sessionId } = ctx
+  const statePatch = sessionInfoStatePatch(payload)
+  const payloadRevision = typeof payload?.revision === 'number' ? payload.revision : undefined
+
+  const staleRevision =
+    payloadRevision !== undefined && knownState?.revision !== undefined && payloadRevision < knownState.revision
+
+  const incomingModel = typeof payload?.model === 'string' ? payload.model : undefined
+  const incomingProvider = typeof payload?.provider === 'string' ? payload.provider : undefined
+  const pickKey = sessionId ? modelPickKey(sessionId, event.connectionId, event.profile, fromActiveSource()) : ''
+
+  const holdModel =
+    Boolean(sessionId) &&
+    (staleRevision ||
+      shouldHoldBackSessionInfoModel(pickKey, {
+        model: incomingModel,
+        provider: incomingProvider,
+        revision: payloadRevision
+      }))
+
+  if (staleRevision) {
+    stripPatchKeys(statePatch, STALE_REVISION_PATCH_KEYS)
+  } else if (holdModel) {
+    recordHeldSessionInfoPolicy(pickKey, payload, payloadRevision)
+    stripPatchKeys(statePatch, HELD_MODEL_PATCH_KEYS)
+  } else if (sessionId && payloadRevision !== undefined) {
+    recordAuthoritativeSessionInfo(pickKey, payload, knownState, payloadRevision)
+  }
+
+  const invalidateModelOptions = !holdModel && sessionInfoRouteChanged(incomingModel, incomingProvider, knownState)
+
+  return {
+    hasStatePatch: hasSessionInfoStatePatch(statePatch),
+    holdModel,
+    invalidateModelOptions,
+    staleRevision,
+    statePatch
+  }
+}
+
 /** Foreground runtime preferences; workspace ownership is reconciled separately. */
-function reconcileSessionInfoPreferences(payload: GatewayEventContext['payload']): void {
+function reconcileSessionInfoPreferences(
+  payload: GatewayEventContext['payload'],
+  fence: { holdModel: boolean; staleRevision: boolean }
+): void {
   if (typeof payload?.terminal_backend === 'string') {
     setTerminalBackend(payload.terminal_backend)
   }
 
   if (typeof payload?.personality === 'string') {
     setCurrentPersonality(normalizePersonalityValue(payload.personality))
+  }
+
+  if (typeof payload?.yolo === 'boolean') {
+    setYoloActive(payload.yolo)
+  }
+
+  if (fence.staleRevision || fence.holdModel) {
+    return
   }
 
   if (typeof payload?.reasoning_effort === 'string') {
@@ -179,10 +344,144 @@ function reconcileSessionInfoPreferences(payload: GatewayEventContext['payload']
   if (typeof payload?.fast === 'boolean') {
     setCurrentFastMode(payload.fast)
   }
+}
 
-  if (typeof payload?.yolo === 'boolean') {
-    setYoloActive(payload.yolo)
+function applyCommittedModelUpdate(
+  ctx: GatewayEventContext,
+  sessionId: string,
+  knownState: ClientSessionState | undefined,
+  record: Record<string, unknown>,
+  revision: number
+): void {
+  const { deps, event, fromActiveSource, isActiveEvent } = ctx
+  const nextModel = record.model as string
+  const nextProvider = typeof record.provider === 'string' ? record.provider : undefined
+  const nextEffort = typeof record.effort === 'string' ? record.effort : undefined
+  const pickKey = modelPickKey(sessionId, event.connectionId, event.profile, fromActiveSource())
+
+  if (
+    shouldHoldBackSessionInfoModel(pickKey, {
+      explicitModelMutation: true,
+      model: nextModel,
+      provider: nextProvider,
+      revision
+    })
+  ) {
+    return
   }
+
+  noteAuthoritativeModel(pickKey, {
+    explicitModelMutation: true,
+    model: nextModel,
+    provider: nextProvider ?? knownState?.provider ?? '',
+    revision
+  })
+
+  const routeChanged = sessionInfoRouteChanged(nextModel, nextProvider, knownState)
+
+  deps.updateSessionState(sessionId, state => {
+    const nextRev = monotonicRevision(state.revision, revision)
+    const nextModelRev = monotonicRevision(state.modelRevision, revision)
+
+    const sliceRouteChanged =
+      state.model !== nextModel || (nextProvider !== undefined && state.provider !== nextProvider)
+
+    return {
+      ...state,
+      model: nextModel,
+      ...(nextProvider !== undefined ? { provider: nextProvider } : {}),
+      ...(nextEffort !== undefined ? { reasoningEffort: nextEffort, reasoningEffortPending: false } : {}),
+      ...(sliceRouteChanged ? { reasoningEffortWire: '' } : {}),
+      ...(nextRev !== undefined ? { revision: nextRev } : {}),
+      ...(nextModelRev !== undefined ? { modelRevision: nextModelRev } : {})
+    }
+  })
+
+  if (isActiveEvent && nextEffort !== undefined) {
+    setCurrentReasoningEffort(nextEffort)
+  }
+
+  if (routeChanged) {
+    void deps.queryClient.invalidateQueries({
+      queryKey: modelOptionsQueryKey(event.profile || deps.activeGatewayProfile, sessionId)
+    })
+  }
+}
+
+function recordRedundantModelCommit(
+  ctx: GatewayEventContext,
+  sessionId: string,
+  knownState: ClientSessionState | undefined,
+  record: Record<string, unknown>,
+  revision: number
+): void {
+  const { event, fromActiveSource } = ctx
+  const pickKey = modelPickKey(sessionId, event.connectionId, event.profile, fromActiveSource())
+
+  noteAuthoritativeModel(pickKey, {
+    explicitModelMutation: true,
+    model: record.model as string,
+    provider: typeof record.provider === 'string' ? record.provider : (knownState?.provider ?? ''),
+    revision
+  })
+}
+
+/** Committed canonical `session.updated` frames (refused/confirm stay in deferred-pick). */
+export function handleSessionUpdatedEvent(ctx: GatewayEventContext): boolean {
+  const { deps, event, payload, sessionId } = ctx
+
+  if ((event.type as string) !== 'session.updated') {
+    return false
+  }
+
+  const record = payload as Record<string, unknown> | undefined
+  const status = record?.status
+
+  if (status === 'refused' || status === 'confirmation_required' || status === 'deferred') {
+    return false
+  }
+
+  const payloadSessionId = typeof record?.session_id === 'string' ? record.session_id : ''
+  const revision = typeof record?.revision === 'number' ? record.revision : undefined
+
+  if (!sessionId || (payloadSessionId && payloadSessionId !== sessionId) || revision === undefined) {
+    return true
+  }
+
+  const knownState = deps.sessionStateByRuntimeIdRef.current.get(sessionId)
+
+  if (record?.operation === 'model' && typeof record.model === 'string') {
+    const knownModelRev = knownState?.modelRevision
+
+    if (knownModelRev !== undefined && revision <= knownModelRev) {
+      if (revision === knownModelRev) {
+        recordRedundantModelCommit(ctx, sessionId, knownState, record, revision)
+      }
+
+      return true
+    }
+
+    applyCommittedModelUpdate(ctx, sessionId, knownState, record, revision)
+
+    return true
+  }
+
+  if (knownState?.revision !== undefined && revision <= knownState.revision) {
+    return true
+  }
+
+  if (record?.operation === 'reasoning' && typeof record.effort === 'string') {
+    const pickKey = modelPickKey(sessionId, event.connectionId, event.profile, ctx.fromActiveSource())
+    noteHeldConfirmedPolicy(pickKey, revision, { reasoningEffort: record.effort, reasoningEffortWire: '' })
+  }
+
+  deps.updateSessionState(sessionId, state => {
+    const nextRev = monotonicRevision(state.revision, revision)
+
+    return nextRev === state.revision ? state : { ...state, revision: nextRev }
+  })
+
+  return true
 }
 
 /** session.info / session.usage / session.title. */
@@ -213,25 +512,11 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     // Apply session-scoped fields when the event targets the active
     // session, OR when it's a global broadcast and we have no session.
     const apply = (explicitSid ? isActiveEvent : !activeSessionIdRef.current) || rebound
-    const statePatch = sessionInfoStatePatch(payload)
-    const hasStatePatch = hasSessionInfoStatePatch(statePatch)
-    const modelChanged = typeof payload?.model === 'string'
-    const providerChanged = typeof payload?.provider === 'string'
     const runningChanged = typeof payload?.running === 'boolean'
-
-    // The backend stamps model/provider (as strings) on EVERY session.info,
-    // so the presence flags above are true on every heartbeat/turn edge —
-    // fine for the cheap atom writes below (nanostores skips identical
-    // values), but they also drove queryClient.invalidateQueries, refetching
-    // the model-options provider catalog once or twice per turn for a model
-    // that never changed. Only a genuine VALUE change (vs the session's own
-    // cached runtime state, captured before the state patch below applies;
-    // composer atoms as the fallback for an uncached session) invalidates.
     const knownState = sessionId ? sessionStateByRuntimeIdRef.current.get(sessionId) : undefined
-    const modelValueChanged = modelChanged && payload!.model !== (knownState?.model ?? $currentModel.get())
 
-    const providerValueChanged =
-      providerChanged && payload!.provider !== (knownState?.provider ?? $currentProvider.get())
+    const { hasStatePatch, holdModel, invalidateModelOptions, staleRevision, statePatch } =
+      resolveSessionInfoModelPatch(ctx, knownState)
 
     // Config is profile-scoped, but session.info also arrives for background
     // sessions. Only an active-session event from the currently active
@@ -288,7 +573,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
         setCurrentBranch(payload.branch)
       }
 
-      reconcileSessionInfoPreferences(payload)
+      reconcileSessionInfoPreferences(payload, { holdModel, staleRevision })
     }
 
     if (sessionId && (hasStatePatch || payload?.usage)) {
@@ -546,9 +831,12 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
       ctx.scheduleConfigRefresh()
     }
 
-    if (modelValueChanged || providerValueChanged) {
+    if (invalidateModelOptions) {
       void queryClient.invalidateQueries({
-        queryKey: explicitSid && sessionId ? modelOptionsQueryKey(activeGatewayProfile, sessionId) : ['model-options']
+        queryKey:
+          explicitSid && sessionId
+            ? modelOptionsQueryKey(event.profile || activeGatewayProfile, sessionId)
+            : ['model-options']
       })
     }
 
