@@ -51,7 +51,7 @@ from utils import atomic_json_write
 from .auth import load_project_credentials
 # Sidecar dir resolution is lazy (never at import): it probes the filesystem and may
 # mirror files. Tests monkeypatch sidecar_paths._SIDECAR_DIR.
-from .sidecar_paths import _NPM_ERROR_LOG_MAX_CHARS, _lock_newer_than_install, _npm_error_log, _sidecar_dir
+from .sidecar_paths import _NPM_ERROR_LOG_MAX_CHARS, _is_in_sealed_bundle, _lock_newer_than_install, _npm_error_log, _sidecar_dir
 from .sidecar_paths import dir_writable as _dir_writable
 from hermes_constants import find_node_executable, with_hermes_node_path
 import contextlib
@@ -317,17 +317,25 @@ def _ensure_sidecar_deps_blocking() -> None:
     concurrently, while ``npm ci`` deletes node_modules before installing. So the checks and the install
     hold a file lock in the shared sidecar dir (a module-level lock is not shared across those imports):
     mid-install, spectrum-ts exists before npm writes its install marker."""
-    lock_path = _sidecar_dir() / ".photon-install.lock"
+    sidecar_dir = _sidecar_dir()
+    if _is_in_sealed_bundle(sidecar_dir):
+        if not sidecar_deps_installed():
+            raise PhotonSidecarStartupError(
+                f"Photon sidecar deps are not installed in the read-only {sidecar_dir}. "
+                f"Run: cd {sidecar_dir} && npm ci   (or `hermes photon setup`)",
+                code="SIDECAR_DEPS_MISSING", retryable=False)
+        return  # sealed bundle with baked deps: never create a lock file inside the signed app
+    lock_path = sidecar_dir / ".photon-install.lock"
     try:
         handle = open(lock_path, "a+b")
     except OSError as exc:
-        if _dir_writable(_sidecar_dir()):  # another profile may be installing here: never go on unlocked
+        if _dir_writable(sidecar_dir):  # another profile may be installing here: never go on unlocked
             raise PhotonSidecarStartupError(
                 f"Cannot open the Photon sidecar install lock {lock_path}: {exc}", code="SIDECAR_LOCK_FAILED") from exc
         if not sidecar_deps_installed():
             raise PhotonSidecarStartupError(
-                f"Photon sidecar deps are not installed in the read-only {_sidecar_dir()}. "
-                f"Run: cd {_sidecar_dir()} && npm ci   (or `hermes photon setup`)",
+                f"Photon sidecar deps are not installed in the read-only {sidecar_dir}. "
+                f"Run: cd {sidecar_dir} && npm ci   (or `hermes photon setup`)",
                 code="SIDECAR_DEPS_MISSING", retryable=False) from exc
         return  # a read-only tree with baked deps: nothing installs there
     with handle, _exclusive_lock(handle):

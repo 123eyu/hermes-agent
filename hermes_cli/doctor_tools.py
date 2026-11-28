@@ -467,11 +467,9 @@ def _check_npm_audit(should_fix: bool, f: Finding) -> None:
     # Termux has no pnpm: nothing installs the JS workspaces on device.
     pnpm_bin = _pm_tool_path("pnpm")
     try:
-        # The WhatsApp bridge may live under a writable HERMES_HOME mirror instead of the (possibly
-        # read-only) install tree in Docker — resolve it through the shared helper so we audit the dir
-        # that actually holds node_modules. See #49561.
-        from gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
-        whatsapp_bridge_dir = resolve_whatsapp_bridge_dir()
+        # Read-only lookup: doctor must not write-probe a sealed bundle or mirror scripts into HERMES_HOME.
+        from gateway.platforms.whatsapp_common import locate_whatsapp_bridge_dir
+        whatsapp_bridge_dir = locate_whatsapp_bridge_dir(project_root=PROJECT_ROOT)
     except Exception:
         whatsapp_bridge_dir = PROJECT_ROOT / "scripts" / "whatsapp-bridge"
     for tool, tree, label, audit_extra in (

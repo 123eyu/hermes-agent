@@ -11,6 +11,7 @@ Resolution never happens at import time (it probes/copies on disk).
 from __future__ import annotations
 
 import filecmp
+import json
 import logging
 import os
 import shutil
@@ -39,13 +40,32 @@ _NPM_ERROR_LOG: Optional[Path] = None
 _NPM_ERROR_LOG_MAX_CHARS = 300
 
 
+def _is_in_sealed_bundle(path: Path) -> bool:
+    """True when ``path`` sits under a bundled desktop payload (``install-stamp.json``
+    with ``payload == "bundled"``), which is user-writable on macOS yet sealed."""
+    resolved = path.resolve()
+    for candidate in (resolved, *resolved.parents):
+        if (candidate / ".git").exists():
+            return False
+        stamp = candidate / "install-stamp.json"
+        if stamp.is_file():
+            try:
+                data = json.loads(stamp.read_text(encoding="utf-8-sig"))
+            except (OSError, ValueError):
+                return False
+            return isinstance(data, dict) and data.get("payload") == "bundled"
+    return False
+
+
 def dir_writable(path: Path) -> bool:
     """True when we can create files in ``path`` (probe, not stat — stat lies on root-squash
     / read-only bind mounts)."""
+    if _is_in_sealed_bundle(path):
+        return False
     probe = path / ".hermes-write-probe"
     try:
         probe.touch()
-        probe.unlink()
+        probe.unlink(missing_ok=True)
     except OSError:
         return False
     return True

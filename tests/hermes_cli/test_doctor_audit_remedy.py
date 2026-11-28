@@ -100,3 +100,87 @@ def test_root_audit_row_is_not_mislabeled_as_agent_browser(monkeypatch, tmp_path
     out = capsys.readouterr().out
     assert "agent-browser" not in out.lower()
     assert "Root npm package deps" in out
+
+
+def test_doctor_npm_audit_never_touches_sealed_bundle_or_creates_mirror(monkeypatch, tmp_path):
+    """Read-only doctor checks must not write inside a sealed bundle or mirror scripts into HERMES_HOME."""
+    from pathlib import Path
+    import hermes_cli.doctor as doctor_mod
+
+    project = tmp_path / "Hermes.app" / "Contents" / "Resources" / "agent-payload" / "hermes-agent"
+    install_bridge = project / "scripts" / "whatsapp-bridge"
+    install_bridge.mkdir(parents=True)
+    (install_bridge / "bridge.js").write_text("// bridge\n", encoding="utf-8")
+    (project / "install-stamp.json").write_text(
+        json.dumps({"payload": "bundled", "distribution": "desktop-app"}), encoding="utf-8",
+    )
+    hermes_home = tmp_path / "hermes_home"
+    hermes_home.mkdir()
+
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr("hermes_cli._startup_fast.project_root_str", lambda: str(project))
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: hermes_home)
+    monkeypatch.setattr(doctor_tools, "_pm_tool_path", lambda name: None)
+
+    touches: list[Path] = []
+    real_touch = Path.touch
+
+    def _track_touch(self, *a, **kw):
+        if project in self.parents or self == project:
+            touches.append(self)
+        return real_touch(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "touch", _track_touch)
+
+    doctor_tools._check_npm_audit(False)
+
+    assert touches == []
+    assert not (hermes_home / "scripts" / "whatsapp-bridge").exists()
+
+
+def test_doctor_npm_audit_audits_existing_hermes_home_mirror_on_sealed_bundle(monkeypatch, tmp_path, capsys):
+    """When WhatsApp deps are already installed in the HERMES_HOME mirror, doctor audits that mirror
+    without touching the sealed bundle."""
+    from pathlib import Path
+    import hermes_cli.doctor as doctor_mod
+
+    project = tmp_path / "Hermes.app" / "Contents" / "Resources" / "agent-payload" / "hermes-agent"
+    install_bridge = project / "scripts" / "whatsapp-bridge"
+    install_bridge.mkdir(parents=True)
+    (install_bridge / "bridge.js").write_text("// bridge\n", encoding="utf-8")
+    (project / "install-stamp.json").write_text(
+        json.dumps({"payload": "bundled", "distribution": "desktop-app"}), encoding="utf-8",
+    )
+    hermes_home = tmp_path / "hermes_home"
+    mirror = hermes_home / "scripts" / "whatsapp-bridge"
+    (mirror / "node_modules").mkdir(parents=True)
+
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr("hermes_cli._startup_fast.project_root_str", lambda: str(project))
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: hermes_home)
+    monkeypatch.setattr(doctor_tools, "_pm_tool_path", lambda name: "/usr/bin/npm" if name == "npm" else None)
+
+    touches: list[Path] = []
+    real_touch = Path.touch
+
+    def _track_touch(self, *a, **kw):
+        if project in self.parents or self == project:
+            touches.append(self)
+        return real_touch(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "touch", _track_touch)
+
+    audited_cwds: list[str] = []
+    completed = subprocess.CompletedProcess([], 0, stdout=_audit_json(), stderr="")
+
+    def _fake_run(*args, **kwargs):
+        audited_cwds.append(str(kwargs.get("cwd", "")))
+        return completed
+
+    monkeypatch.setattr(doctor_tools.subprocess, "run", _fake_run)
+
+    doctor_tools._check_npm_audit(False)
+
+    assert touches == []
+    assert audited_cwds == [str(mirror)]
+    assert "WhatsApp bridge deps" in capsys.readouterr().out

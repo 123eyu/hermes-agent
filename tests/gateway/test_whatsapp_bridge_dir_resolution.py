@@ -87,3 +87,39 @@ def test_existing_mirror_is_refreshed_from_the_install_tree_and_keeps_its_deps(t
     assert (mirror / "bridge.js").read_text() == "// bridge\n"
     assert (mirror / "bridge_auth.js").read_text() == "// new auth\n"
     assert (mirror / "node_modules" / "dep" / "index.js").read_text() == "// installed\n"
+
+
+def test_sealed_bundle_mirrors_without_probing_install_tree(tmp_path, monkeypatch):
+    """A user-writable sealed desktop bundle (macOS .app) must mirror to HERMES_HOME
+    without touching or unlinking .write_test inside the signed bundle."""
+    import json
+
+    install_root = tmp_path / "Hermes.app" / "Contents" / "Resources" / "agent-payload" / "hermes-agent"
+    install_bridge = install_root / "scripts" / "whatsapp-bridge"
+    _seed_install_tree(install_bridge)
+    (install_root / "install-stamp.json").write_text(
+        json.dumps({"payload": "bundled", "distribution": "desktop-app"}), encoding="utf-8",
+    )
+
+    hermes_home = tmp_path / "hermes_home"
+    hermes_home.mkdir()
+
+    monkeypatch.setattr("hermes_cli._startup_fast.project_root_str", lambda: str(install_root))
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: hermes_home)
+
+    touches: list[Path] = []
+    real_touch = Path.touch
+
+    def _track_touch(self, *a, **kw):
+        if install_root in self.parents or self == install_root:
+            touches.append(self)
+        return real_touch(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "touch", _track_touch)
+
+    resolved = whatsapp_common.resolve_whatsapp_bridge_dir()
+
+    expected = hermes_home / "scripts" / "whatsapp-bridge"
+    assert resolved == expected
+    assert touches == []
+    assert (expected / "bridge.js").read_text(encoding="utf-8-sig") == "// bridge\n"
