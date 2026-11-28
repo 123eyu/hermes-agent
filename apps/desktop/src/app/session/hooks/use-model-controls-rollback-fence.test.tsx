@@ -669,4 +669,44 @@ describe('model pick rollback fencing across slice, globals, cache and saved cho
 
     h.queryClient.clear()
   })
+
+  it('keeps the pre-pick saved new-chat choice when C rebased onto external X and B then C fail', async () => {
+    const h = mountLiveEnvironment(5)
+
+    let pickB!: Promise<boolean>
+    let pickC!: Promise<boolean>
+
+    act(() => {
+      pickB = h.result.current.controls.selectModel(B)
+    })
+
+    h.emitEvent({
+      payload: { execution_generation: 2, model: X.model, provider: X.provider, revision: 6, running: false },
+      session_id: h.sid,
+      type: 'session.info'
+    })
+
+    expect(PRIMARY_SESSION_VIEW.$model.get()).toBe(X.model)
+
+    act(() => {
+      pickC = h.result.current.controls.selectModel(C)
+    })
+
+    await act(async () => {
+      h.pendingModelReplies[0].reply.reject(new Error('revision_conflict'))
+      await expect(pickB).resolves.toBe(false)
+    })
+
+    await act(async () => {
+      h.pendingModelReplies[1].reply.reject(new Error('provider rejected'))
+      await expect(pickC).resolves.toBe(false)
+    })
+
+    expect(PRIMARY_SESSION_VIEW.$model.get()).toBe(X.model)
+    expect($sessionStates.get()[h.sid]).toMatchObject({ model: X.model, provider: X.provider })
+    // Neither pick was accepted, so the next new chat follows the choice saved before B.
+    expect(getComposerModelSelection()).toMatchObject({ model: A.model, provider: A.provider, source: 'default' })
+
+    h.queryClient.clear()
+  })
 })

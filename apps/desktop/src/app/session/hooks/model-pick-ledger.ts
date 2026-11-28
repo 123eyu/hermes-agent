@@ -185,7 +185,9 @@ export function beginModelPick(
       baseRevision >= picks.authoritative.revision &&
       (picks.confirmedRevision === undefined || picks.authoritative.revision > picks.confirmedRevision)
     ) {
-      picks.confirmed = before
+      // Rebase the route onto the newer external switch, but keep the saved new-chat
+      // choice: `before.composerSelection` can still be an earlier unconfirmed pick's.
+      picks.confirmed = { ...before, composerSelection: picks.confirmed.composerSelection }
       picks.confirmedPolicy = undefined
       picks.confirmedPolicyRevision = undefined
       picks.confirmedRevision = baseRevision
