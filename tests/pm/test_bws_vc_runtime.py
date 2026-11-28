@@ -48,6 +48,8 @@ def test_windows_bws_stages_pythons_vc_runtime_beside_bws(tmp_path, monkeypatch,
 
     assert (staged / "bws.exe").is_file()
     assert (staged / "vcruntime140.dll").read_bytes() == runtime.read_bytes()
+    # File evidence only: a header-only bws.exe can't run on the host whose own target this is.
+    monkeypatch.setattr(bws, "probe_version", False)
     assert bws.verify(staged, target) == ""
 
 
