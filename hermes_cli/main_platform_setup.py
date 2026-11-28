@@ -209,8 +209,12 @@ def cmd_whatsapp(args):
     _whatsapp_allowed_users(wa_mode, get_env_value, save_env_value)
     _whatsapp_warn_customer_facing(wa_mode, get_env_value)
 
-    from gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
-    bridge_dir = resolve_whatsapp_bridge_dir()
+    from gateway.platforms.whatsapp_common import WhatsAppBridgeUnavailable, resolve_whatsapp_bridge_dir
+    try:
+        bridge_dir = resolve_whatsapp_bridge_dir()
+    except WhatsAppBridgeUnavailable as exc:
+        print(f"\n✗ {exc}")
+        return
     bridge_script = bridge_dir / "bridge.js"
     if not bridge_script.exists():
         print(f"\n✗ Bridge script not found at {bridge_script}")

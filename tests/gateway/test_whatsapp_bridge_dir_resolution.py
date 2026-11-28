@@ -123,3 +123,25 @@ def test_sealed_bundle_mirrors_without_probing_install_tree(tmp_path, monkeypatc
     assert resolved == expected
     assert touches == []
     assert (expected / "bridge.js").read_text(encoding="utf-8-sig") == "// bridge\n"
+
+
+def test_sealed_bundle_refuses_instead_of_returning_its_own_bridge_dir(tmp_path, monkeypatch):
+    """When the mirror can't be made, a bundle must not hand back its own dir: setup and pairing npm install
+    into whatever dir they get, which would write node_modules into the signed .app."""
+    import json
+
+    install_root = tmp_path / "Hermes.app" / "Contents" / "Resources" / "agent-payload" / "hermes-agent"
+    install_bridge = install_root / "scripts" / "whatsapp-bridge"
+    _seed_install_tree(install_bridge)
+    (install_root / "install-stamp.json").write_text(
+        json.dumps({"payload": "bundled", "distribution": "desktop-app"}), encoding="utf-8",
+    )
+    hermes_home = tmp_path / "hermes_home"
+    hermes_home.write_text("not a directory\n", encoding="utf-8")  # the mirror's parent can't be created
+
+    monkeypatch.setattr("hermes_cli._startup_fast.project_root_str", lambda: str(install_root))
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: hermes_home)
+
+    with pytest.raises(RuntimeError, match="out of the desktop app"):
+        whatsapp_common.resolve_whatsapp_bridge_dir()
+    assert sorted(p.name for p in install_bridge.iterdir()) == ["bridge.js", "package.json"]

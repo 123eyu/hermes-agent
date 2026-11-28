@@ -302,6 +302,10 @@ def locate_whatsapp_bridge_dir(project_root: Optional[Path] = None) -> Path:
     return install_bridge
 
 
+class WhatsAppBridgeUnavailable(RuntimeError):
+    """A sealed desktop bundle's bridge could not be mirrored out of the bundle."""
+
+
 def resolve_whatsapp_bridge_dir() -> Path:
     """Bridge directory for CLI and adapter. A sealed desktop bundle or read-only
     install tree (e.g. Docker /opt/hermes) is mirrored to HERMES_HOME so npm install works."""
@@ -313,8 +317,9 @@ def resolve_whatsapp_bridge_dir() -> Path:
     project_root = Path(project_root_str())
     install_bridge = project_root / "scripts" / "whatsapp-bridge"
     hermes_home_bridge = get_hermes_home() / "scripts" / "whatsapp-bridge"
+    bundled = is_bundled_payload(project_root)
     # A macOS .app bundle is user-writable, so probing it would mutate its code seal.
-    if not is_bundled_payload(project_root):
+    if not bundled:
         try:
             (install_bridge / ".write_test").touch()
             (install_bridge / ".write_test").unlink()
@@ -335,5 +340,8 @@ def resolve_whatsapp_bridge_dir() -> Path:
         mkdir_under_hermes_home(hermes_home_bridge.parent)
         shutil.copytree(install_bridge, hermes_home_bridge, dirs_exist_ok=False)
         return hermes_home_bridge
-    except Exception:
+    except Exception as exc:
+        if bundled:  # callers npm install into the dir they get, which would break the bundle's code seal
+            raise WhatsAppBridgeUnavailable(
+                f"Cannot copy the WhatsApp bridge out of the desktop app into {hermes_home_bridge}: {exc}") from exc
         return install_bridge

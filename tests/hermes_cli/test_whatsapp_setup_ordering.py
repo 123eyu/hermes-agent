@@ -126,3 +126,29 @@ def test_existing_pairing_skip_branch_enables_only_paired_identity(isolated_home
 
     # Keeping partial credentials must not enable an unfinished pairing.
     assert (_env_value(isolated_home, "WHATSAPP_ENABLED") == "true") == paired
+
+
+def test_unmirrorable_bundle_bridge_stops_setup_before_any_install(isolated_home, monkeypatch):
+    """A desktop bundle whose bridge can't be mirrored ends setup with the reason, never an npm install."""
+    from gateway.platforms import whatsapp_common
+    from hermes_cli.main_platform_setup import cmd_whatsapp
+
+    monkeypatch.setenv("WHATSAPP_MODE", "bot")
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15551234567")
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "n")
+    monkeypatch.setattr("hermes_cli.main._require_tty", lambda *_a, **_kw: None)
+
+    def _refuse():
+        raise whatsapp_common.WhatsAppBridgeUnavailable("Cannot copy the WhatsApp bridge out of the desktop app")
+
+    installs: list[Path] = []
+    monkeypatch.setattr("gateway.platforms.whatsapp_common.resolve_whatsapp_bridge_dir", _refuse)
+    monkeypatch.setattr("hermes_cli.main_platform_setup._whatsapp_install_bridge", lambda path: installs.append(path))
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        cmd_whatsapp(SimpleNamespace())
+
+    assert installs == []
+    assert "Cannot copy the WhatsApp bridge out of the desktop app" in buf.getvalue()
+    assert _env_value(isolated_home, "WHATSAPP_ENABLED") is None
