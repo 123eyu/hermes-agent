@@ -1553,7 +1553,7 @@ export function useSessionActions({
                 ? Boolean(settlePendingClarifyToolCall(cachedViewState.messages, {}, false).streamId)
                 : false
 
-              const runtimeInfo = applyRuntimeInfo(activated.info, { owner: sessionOwner })
+              const runtimeInfo = applyRuntimeInfo(activated.info, { owner: sessionOwner, sessionId: cachedRuntimeId })
 
               // `omit_messages` means the response carries NO transcript, not
               // an empty one — the cache is the base and the live projection is
@@ -2254,7 +2254,7 @@ export function useSessionActions({
         const clarifyAuthoritativelyAbsent =
           pendingClarifyState.authoritativeAbsent && !$clarifyRequests.get()[resumed.session_id]
 
-        const runtimeInfo = applyRuntimeInfo(resumed.info, { owner: sessionOwner })
+        const runtimeInfo = applyRuntimeInfo(resumed.info, { owner: sessionOwner, sessionId: resumed.session_id })
 
         patchSessionWorkspace(storedSessionId, runtimeInfo?.cwd)
 

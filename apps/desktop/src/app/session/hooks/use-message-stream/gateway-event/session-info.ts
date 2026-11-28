@@ -44,10 +44,13 @@ import {
 import {
   applySessionInfoStatePatch,
   hasSessionInfoStatePatch,
+  HELD_MODEL_PATCH_KEYS,
   monotonicRevision,
   PRE_TURN_LIVE_SETTLE_GRACE_MS,
   sessionInfoStatePatch,
-  type SessionRuntimeStatePatch
+  type SessionRuntimeStatePatch,
+  STALE_REVISION_PATCH_KEYS,
+  stripPatchKeys
 } from '../utils'
 
 import { payTurnEndReport, runningEdge } from './turn-end-report'
@@ -169,35 +172,6 @@ interface SessionInfoModelPatchResult {
   invalidateModelOptions: boolean
   staleRevision: boolean
   statePatch: SessionRuntimeStatePatch
-}
-
-const STALE_REVISION_PATCH_KEYS: readonly (keyof SessionRuntimeStatePatch)[] = [
-  'model',
-  'provider',
-  'modelRevision',
-  'revision',
-  'reasoningEffort',
-  'reasoningEffortPending',
-  'reasoningEffortWire',
-  'fast',
-  'serviceTier'
-]
-
-const HELD_MODEL_PATCH_KEYS: readonly (keyof SessionRuntimeStatePatch)[] = [
-  'model',
-  'provider',
-  'modelRevision',
-  'reasoningEffort',
-  'reasoningEffortPending',
-  'reasoningEffortWire',
-  'fast',
-  'serviceTier'
-]
-
-function stripPatchKeys(patch: SessionRuntimeStatePatch, keys: readonly (keyof SessionRuntimeStatePatch)[]): void {
-  for (const key of keys) {
-    delete patch[key]
-  }
 }
 
 function sessionInfoRouteChanged(

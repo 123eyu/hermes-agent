@@ -4,6 +4,7 @@ import type { ErrorSurface } from '@/lib/error-surface'
 import { isTodoToolName } from '@/lib/todos'
 
 import type { ClientSessionState } from '../../../types'
+import { shouldHoldBackSessionInfoModel } from '../model-pick-ledger'
 
 export type SessionRuntimeStatePatch = Partial<
   Pick<
@@ -30,6 +31,51 @@ export function monotonicRevision(current: number | undefined, next: number | un
   }
 
   return current === undefined || next > current ? next : current
+}
+
+/** Model, policy and revision fields a frame older than the cached revision must not write. */
+export const STALE_REVISION_PATCH_KEYS: readonly (keyof SessionRuntimeStatePatch)[] = [
+  'model',
+  'provider',
+  'modelRevision',
+  'revision',
+  'reasoningEffort',
+  'reasoningEffortPending',
+  'reasoningEffortWire',
+  'fast',
+  'serviceTier'
+]
+
+/** Model and policy fields held back while an in-flight pick owns the slice; the revision still advances. */
+export const HELD_MODEL_PATCH_KEYS: readonly (keyof SessionRuntimeStatePatch)[] = STALE_REVISION_PATCH_KEYS.filter(
+  key => key !== 'revision'
+)
+
+export function stripPatchKeys(
+  patch: SessionRuntimeStatePatch,
+  keys: readonly (keyof SessionRuntimeStatePatch)[]
+): void {
+  for (const key of keys) {
+    delete patch[key]
+  }
+}
+
+/** Fence a runtime snapshot (`session.activate` / `session.resume` info) the way `session.info` is fenced:
+ *  one older than the cached revision keeps out of the model, policy and revision fields, so a late
+ *  snapshot can neither restore an older route nor lower the fence, and one an in-flight pick holds
+ *  back leaves that pick's paint alone. */
+export function fenceRuntimeSnapshotPatch(
+  patch: SessionRuntimeStatePatch,
+  knownRevision: number | undefined,
+  pickKey: string
+): void {
+  if (patch.revision !== undefined && knownRevision !== undefined && patch.revision < knownRevision) {
+    stripPatchKeys(patch, STALE_REVISION_PATCH_KEYS)
+  } else if (
+    shouldHoldBackSessionInfoModel(pickKey, { model: patch.model, provider: patch.provider, revision: patch.revision })
+  ) {
+    stripPatchKeys(patch, HELD_MODEL_PATCH_KEYS)
+  }
 }
 
 export function sessionInfoStatePatch(payload: GatewayEventPayload | undefined): SessionRuntimeStatePatch {

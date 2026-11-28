@@ -55,7 +55,7 @@ import {
   tombstoneLifecycleChanged
 } from '@/store/session-removal'
 import type { SessionProfileRoute } from '@/store/session-request-router'
-import { runtimeSessionOwner, sessionTileOwnerRoute } from '@/store/session-states'
+import { $sessionStates, runtimeSessionOwner, sessionTileOwnerRoute } from '@/store/session-states'
 
 // Re-exported for the many session-actions/tile call sites that already import
 // it from here; the canonical definition lives in @/store/session.
@@ -65,7 +65,8 @@ import { reportBackendContract, reportInstallMethodWarning } from '@/store/updat
 import type { SessionCreateResponse, SessionInfo, SessionResumeResult, SessionRuntimeInfo } from '@/types/hermes'
 
 import type { ClientSessionState } from '../../../types'
-import { sessionInfoStatePatch } from '../use-message-stream/utils'
+import { modelPickKey } from '../model-pick-ledger'
+import { fenceRuntimeSnapshotPatch, sessionInfoStatePatch } from '../use-message-stream/utils'
 
 import {
   committedReplyCovers,
@@ -2134,6 +2135,8 @@ interface ApplyRuntimeInfoOptions {
   foreground?: boolean
   /** The backend that produced `info` when it is not the ambient gateway. */
   owner?: SessionOwnerScope
+  /** The main-pane session `info` describes, when the cache may already hold a newer revision of it. */
+  sessionId?: string
 }
 
 /** Paint foreground runtime metadata without persisting its resolved provider
@@ -2212,7 +2215,7 @@ function reportRuntimeInfoAppState(info: SessionRuntimeInfo, owner: SessionOwner
 
 export function applyRuntimeInfo(
   info: SessionRuntimeInfo | undefined,
-  { foreground = true, owner }: ApplyRuntimeInfoOptions = {}
+  { foreground = true, owner, sessionId }: ApplyRuntimeInfoOptions = {}
 ): SessionRuntimeStatePatch | null {
   if (!info) {
     return null
@@ -2221,6 +2224,15 @@ export function applyRuntimeInfo(
   reportRuntimeInfoAppState(info, owner)
 
   const sessionState: SessionRuntimeStatePatch = sessionInfoStatePatch(info as GatewayEventPayload)
+
+  if (sessionId) {
+    // Before publishing: the composer globals and the caller's spread both read this patch.
+    fenceRuntimeSnapshotPatch(
+      sessionState,
+      $sessionStates.get()[sessionId]?.revision,
+      modelPickKey(sessionId, null, null)
+    )
+  }
 
   if (info.branch !== undefined) {
     sessionState.branch = info.branch || ''
