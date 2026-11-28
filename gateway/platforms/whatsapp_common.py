@@ -289,7 +289,9 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
 
 
 def locate_whatsapp_bridge_dir(project_root: Optional[Path] = None) -> Path:
-    """Read-only bridge lookup for diagnostics: never probes writability or creates a mirror."""
+    """Read-only bridge lookup for diagnostics: resolve_whatsapp_bridge_dir()'s choice without its write
+    probe or mirror copy. os.access stands in for the probe, so a leftover mirror never outranks a
+    writable install tree the bridge actually runs from."""
     from hermes_cli._startup_fast import project_root_str
     from hermes_cli.steward import is_bundled_payload
     from hermes_constants import get_hermes_home
@@ -297,9 +299,11 @@ def locate_whatsapp_bridge_dir(project_root: Optional[Path] = None) -> Path:
     root = Path(project_root) if project_root is not None else Path(project_root_str())
     install_bridge = root / "scripts" / "whatsapp-bridge"
     hermes_home_bridge = get_hermes_home() / "scripts" / "whatsapp-bridge"
-    if (hermes_home_bridge / "node_modules").exists() or is_bundled_payload(root):
+    if is_bundled_payload(root):
         return hermes_home_bridge
-    return install_bridge
+    if os.access(install_bridge, os.W_OK) or not hermes_home_bridge.exists():
+        return install_bridge
+    return hermes_home_bridge
 
 
 class WhatsAppBridgeUnavailable(RuntimeError):

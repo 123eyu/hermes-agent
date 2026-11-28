@@ -11,9 +11,11 @@ the shipped root lockfile must audit clean so the finding never appears at all.
 """
 
 import json
+import os
 import subprocess
 from unittest.mock import patch
 
+import pytest
 
 from hermes_cli import doctor_tools
 from hermes_cli.doctor_report import Finding
@@ -184,3 +186,67 @@ def test_doctor_npm_audit_audits_existing_hermes_home_mirror_on_sealed_bundle(mo
     assert touches == []
     assert audited_cwds == [str(mirror)]
     assert "WhatsApp bridge deps" in capsys.readouterr().out
+
+
+def test_doctor_npm_audit_audits_the_checkout_bridge_over_a_leftover_mirror(monkeypatch, tmp_path):
+    """A source checkout runs WhatsApp from its own writable bridge dir, so a mirror an earlier desktop install
+    left in the same HERMES_HOME is not the tree doctor audits."""
+    import hermes_cli.doctor as doctor_mod
+
+    project = tmp_path / "checkout"
+    install_bridge = project / "scripts" / "whatsapp-bridge"
+    (install_bridge / "node_modules").mkdir(parents=True)
+    hermes_home = tmp_path / "hermes_home"
+    (hermes_home / "scripts" / "whatsapp-bridge" / "node_modules").mkdir(parents=True)
+
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: hermes_home)
+    monkeypatch.setattr(doctor_tools, "_pm_tool_path", lambda name: "/usr/bin/npm" if name == "npm" else None)
+
+    audited_cwds: list[str] = []
+    completed = subprocess.CompletedProcess([], 0, stdout=_audit_json(), stderr="")
+
+    def _fake_run(*args, **kwargs):
+        audited_cwds.append(str(kwargs.get("cwd", "")))
+        return completed
+
+    monkeypatch.setattr(doctor_tools.subprocess, "run", _fake_run)
+
+    doctor_tools._check_npm_audit(False)
+
+    assert audited_cwds == [str(install_bridge)]
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root writes through mode 0o555")
+def test_doctor_npm_audit_audits_the_mirror_of_a_read_only_install(monkeypatch, tmp_path):
+    """A read-only install tree (Docker /opt/hermes) runs the bridge from its HERMES_HOME mirror (#49561)."""
+    import hermes_cli.doctor as doctor_mod
+
+    project = tmp_path / "opt-hermes"
+    install_bridge = project / "scripts" / "whatsapp-bridge"
+    (install_bridge / "node_modules").mkdir(parents=True)
+    hermes_home = tmp_path / "hermes_home"
+    mirror = hermes_home / "scripts" / "whatsapp-bridge"
+    (mirror / "node_modules").mkdir(parents=True)
+    install_bridge.chmod(0o555)
+
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: hermes_home)
+    monkeypatch.setattr(doctor_tools, "_pm_tool_path", lambda name: "/usr/bin/npm" if name == "npm" else None)
+
+    audited_cwds: list[str] = []
+    completed = subprocess.CompletedProcess([], 0, stdout=_audit_json(), stderr="")
+
+    def _fake_run(*args, **kwargs):
+        audited_cwds.append(str(kwargs.get("cwd", "")))
+        return completed
+
+    monkeypatch.setattr(doctor_tools.subprocess, "run", _fake_run)
+
+    try:
+        doctor_tools._check_npm_audit(False)
+    finally:
+        install_bridge.chmod(0o755)
+
+    assert audited_cwds == [str(mirror)]
