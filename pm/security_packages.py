@@ -28,7 +28,8 @@ class Bws(BinaryPackage):
     gaps = {"linux-arm64-bionic": "upstream does not ship an Android binary"}
 
     def _probe_env(self) -> dict:
-        # python is only a staging-time DLL source; keep it off PATH so the smoke probe cannot borrow its DLL.
+        # python is a staging-time DLL source, not a runtime dependency, so none of its env goes in. What
+        # keeps the probe off python's DLL is verify() requiring the app-local copy, which the loader takes first.
         return dict(os.environ)
 
     def fetch_url(self, version: str, target: str) -> str:
