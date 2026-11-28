@@ -72,6 +72,7 @@ $PortFile = Join-Path $Work 'feed-url'
 $Helper = Join-Path $Assets 'windows-bundled-helpers.mjs'
 $server = Start-Process -FilePath $Node -ArgumentList @('"'+$Helper+'"', 'serve', '--feed', '"'+$Feed+'"', '--port-file', '"'+$PortFile+'"') -PassThru -RedirectStandardOutput (Join-Path $Proof 'feed.log') -RedirectStandardError (Join-Path $Proof 'feed-error.log')
 $installed = $false
+$old = $null
 $mock = $null
 $oldDriver = $null
 $passed = $false
@@ -148,8 +149,7 @@ try {
     if (-not $new -or $newRows.Count -ne 1) { throw 'Native update did not automatically relaunch the new package' }
     $newProcess = $newRows[0]
     if ($newProcess.CreationDate -le $oldProcess.CreationDate) { throw 'New process was not created after OLD' }
-    $stale = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($old.package.InstallLocation + '\', [StringComparison]::OrdinalIgnoreCase) })
-    if ($stale.Count) { throw 'Old payload processes remain alive' }
+    & (Join-Path $Assets 'windows-stale-processes.ps1') -OldInstallLocation $old.package.InstallLocation -ProofDir $Proof
     $healthy = $false
     $deadline = (Get-Date).AddMinutes(3)
     do {
@@ -184,7 +184,8 @@ try {
 } finally {
     if (-not $passed) {
         # Before teardown removes the package; a collection error must not replace the leg's own.
-        try { & (Join-Path $Assets 'windows-update-evidence.ps1') -OutDir (Join-Path $Proof 'update-evidence') -Since $LegStart -Identity $m.old.identity }
+        $oldLoc = if ($old) { $old.package.InstallLocation } else { '' }
+        try { & (Join-Path $Assets 'windows-update-evidence.ps1') -OutDir (Join-Path $Proof 'update-evidence') -Since $LegStart -Identity $m.old.identity -OldInstallLocation $oldLoc }
         catch { Write-Host "  [evidence] collection failed: $($_.Exception.Message)" }
     }
     if ($mock -and -not $mock.HasExited) { Stop-Process -Id $mock.Id -ErrorAction SilentlyContinue }

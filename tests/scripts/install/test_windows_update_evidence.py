@@ -159,3 +159,54 @@ def test_keeps_app_installer_diagnostics_written_since_the_leg_began(tmp_path):
     assert "App Installer diagnostics: 1 files since the leg began" in result.stdout
     assert "    [2026/11/13 14:34:07.602] ERROR: AppsInfo -> Error: [0x8051100f]" in result.stdout
     assert "GoToState" not in result.stdout
+
+
+def test_saves_matching_process_snapshot_with_full_identity(tmp_path):
+    old_loc = r"C:\Program Files\WindowsApps\NousResearch.Hermes.EvidenceTest_0.22.0.0_x64"
+    fakes = FAKE_HOST + rf"""
+function Get-CimInstance {{ [CmdletBinding()] param([string]$ClassName)
+    if ($ClassName -eq 'Win32_Process') {{
+        @(
+            [pscustomobject]@{{ ProcessId = 101; ParentProcessId = 50; Name = 'python.exe'; CreationDate = $at; ExecutablePath = '{old_loc}\app\resources\agent-payload\tools\python\python.exe'; CommandLine = 'python.exe -m hermes_cli.main gateway run' }}
+            [pscustomobject]@{{ ProcessId = 202; ParentProcessId = 1; Name = 'Hermes Agent.exe'; CreationDate = $at.AddMinutes(4); ExecutablePath = 'C:\Program Files\WindowsApps\{IDENTITY}\app\Hermes Agent.exe'; CommandLine = '"Hermes Agent.exe"' }}
+            [pscustomobject]@{{ ProcessId = 303; ParentProcessId = 1; Name = 'notepad.exe'; CreationDate = $at; ExecutablePath = 'C:\Windows\System32\notepad.exe'; CommandLine = 'notepad.exe notes.txt' }}
+        )
+    }}
+}}
+"""
+    powershell = shutil.which("powershell")
+    assert powershell
+    out = tmp_path / "evidence"
+    script = (
+        "$ErrorActionPreference = 'Stop'\nSet-StrictMode -Version Latest\n" + fakes
+        + f"\ntry {{ & '{COLLECTOR}' -OutDir '{out}' -Since (Get-Date).AddHours(-1) -Identity '{IDENTITY}' -OldInstallLocation '{old_loc}' }}\n"
+        + "catch { Write-Host \"  [evidence] collection failed: $($_.Exception.Message)\" }\n"
+    )
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    result = subprocess.run([powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
+                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "collection failed" not in result.stdout, result.stdout
+
+    procs = json.loads((out / "processes.json").read_text(encoding="utf-8-sig"))
+    assert [p["ProcessId"] for p in procs] == [101, 202]
+    assert procs[0]["ParentProcessId"] == 50
+    assert procs[0]["Name"] == "python.exe"
+    assert procs[0]["ExecutablePath"].startswith(old_loc + "\\")
+    assert "gateway run" in procs[0]["CommandLine"]
+    assert "matching processes: 2" in result.stdout
+    assert "pid=101 ppid=50 name=python.exe" in result.stdout
+    assert "notepad.exe" not in result.stdout
+
+
+def test_process_snapshot_error_is_recorded_and_does_not_abort_other_evidence(tmp_path):
+    fakes = FAKE_HOST + """
+function Get-CimInstance { [CmdletBinding()] param([string]$ClassName)
+    throw 'WMI query failed'
+}
+"""
+    result, out = _collect(tmp_path, fakes)
+
+    assert "matching processes: could not read: WMI query failed" in result.stdout
+    assert (out / "processes-error.txt").read_text(encoding="utf-8-sig").strip() == "could not read: WMI query failed"
+    assert len(_lines(out, "AppxPackaging_Operational")) == 3
