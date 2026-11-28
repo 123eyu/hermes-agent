@@ -103,3 +103,26 @@ function Get-CimInstance {{ [CmdletBinding()] param([string]$ClassName)
     assert [p["ProcessId"] for p in report["initial"]] == [9001]
     assert [p["ProcessId"] for p in report["remaining"]] == [9001]
     assert report["remaining"][0]["ExecutablePath"].endswith(r"\python.exe")
+
+
+def test_query_error_while_settling_still_saves_the_sighting_and_fails(tmp_path):
+    fake_cim = rf"""
+$global:stale_calls = 0
+function Get-CimInstance {{ [CmdletBinding()] param([string]$ClassName)
+    $global:stale_calls++
+    if ($global:stale_calls -gt 1) {{ throw 'WMI query failed' }}
+    @([pscustomobject]@{{ ProcessId = 5150; ParentProcessId = 1044; Name = 'python.exe'; CreationDate = $at; ExecutablePath = '{OLD_LOC}\app\resources\agent-payload\tools\python\python.exe'; CommandLine = 'python.exe -m hermes_cli.main gateway run' }})
+}}
+"""
+    result, proof = _run_checker(tmp_path, fake_cim, settle_seconds=3, poll_ms=25)
+
+    combined = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert "WMI query failed" in combined
+    assert (proof / "stale-processes.json").exists(), combined
+    report = json.loads((proof / "stale-processes.json").read_text(encoding="utf-8-sig"))
+    assert report["settled"] is False
+    assert report["queryError"] == "WMI query failed"
+    assert [p["ProcessId"] for p in report["initial"]] == [5150]
+    assert report["initial"][0]["CommandLine"] == "python.exe -m hermes_cli.main gateway run"
+    assert [p["ProcessId"] for p in report["remaining"]] == [5150]

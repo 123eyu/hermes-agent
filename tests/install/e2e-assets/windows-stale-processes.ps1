@@ -2,6 +2,7 @@
 # When any are seen initially, poll up to -SettleSeconds for post-swap teardown while
 # recording full process identity (ProcessId, ParentProcessId, Name, CreationDate,
 # ExecutablePath, CommandLine) to both stdout and proof/stale-processes.json.
+# A query that fails while waiting still saves what the first one saw, then fails the check.
 param(
     [Parameter(Mandatory = $true)][string]$OldInstallLocation,
     [Parameter(Mandatory = $true)][string]$ProofDir,
@@ -30,11 +31,17 @@ Write-Host "  [stale] $($initial.Count) old payload process(es) alive under $($O
 foreach ($record in $initial) { Write-Host "    $(Format-ProcessLine $record)" }
 
 $remaining = $initial
+$queryError = $null
 if ($SettleSeconds -gt 0) {
     $deadline = (Get-Date).AddSeconds($SettleSeconds)
-    while ($remaining.Count -gt 0 -and (Get-Date) -lt $deadline) {
-        if ($PollMilliseconds -gt 0) { Start-Sleep -Milliseconds $PollMilliseconds }
-        $remaining = @(Find-StaleProcesses)
+    try {
+        while ($remaining.Count -gt 0 -and (Get-Date) -lt $deadline) {
+            if ($PollMilliseconds -gt 0) { Start-Sleep -Milliseconds $PollMilliseconds }
+            $remaining = @(Find-StaleProcesses)
+        }
+    } catch {
+        # Keep the last records read: a process that has exited meanwhile cannot be read again.
+        $queryError = $_.Exception.Message
     }
 }
 
@@ -47,6 +54,7 @@ $report = [ordered]@{
     checkedAt          = $checkedAt.ToString('o')
     settleSeconds      = $SettleSeconds
     settled            = $settled
+    queryError         = $queryError
     initial            = [object[]]@($initial)
     remaining          = [object[]]@($remaining)
 }
@@ -57,6 +65,7 @@ if ($settled) {
     Write-Host "  [stale] old payload processes exited within ${elapsed}s (saved stale-processes.json)"
     return
 }
+if ($queryError) { throw "Could not re-read old payload processes while waiting for teardown (saved stale-processes.json): $queryError" }
 
 Write-Host "  [stale] $($remaining.Count) old payload process(es) still alive after ${SettleSeconds}s (saved stale-processes.json):"
 foreach ($record in $remaining) { Write-Host "    $(Format-ProcessLine $record)" }
