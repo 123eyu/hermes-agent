@@ -52,7 +52,7 @@ from .auth import load_project_credentials
 # Sidecar dir resolution is lazy (never at import): it probes the filesystem and may
 # mirror files. Tests monkeypatch sidecar_paths._SIDECAR_DIR.
 from .sidecar_paths import _NPM_ERROR_LOG_MAX_CHARS, _is_in_sealed_bundle, _lock_newer_than_install, _npm_error_log, _sidecar_dir
-from .sidecar_paths import dir_writable as _dir_writable
+from .sidecar_paths import dir_writable as _dir_writable, sealed_bundle_deps_missing
 from hermes_constants import find_node_executable, with_hermes_node_path
 import contextlib
 
@@ -321,9 +321,7 @@ def _ensure_sidecar_deps_blocking() -> None:
     if _is_in_sealed_bundle(sidecar_dir):
         if not sidecar_deps_installed():
             raise PhotonSidecarStartupError(
-                f"Photon sidecar deps are not installed in the read-only {sidecar_dir}. "
-                f"Run: cd {sidecar_dir} && npm ci   (or `hermes photon setup`)",
-                code="SIDECAR_DEPS_MISSING", retryable=False)
+                sealed_bundle_deps_missing(sidecar_dir), code="SIDECAR_DEPS_MISSING", retryable=False)
         return  # sealed bundle with baked deps: never create a lock file inside the signed app
     lock_path = sidecar_dir / ".photon-install.lock"
     try:

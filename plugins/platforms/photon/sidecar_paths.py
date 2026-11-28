@@ -59,6 +59,14 @@ def _is_in_sealed_bundle(path: Path) -> bool:
     return False
 
 
+def sealed_bundle_deps_missing(sidecar_dir: Path) -> str:
+    """Why nothing installs the deps of a sidecar the resolver left inside a sealed bundle: it only
+    does that when mirroring to HERMES_HOME failed (baked, current deps run in place)."""
+    return (f"Photon sidecar deps are not installed, and {sidecar_dir} is inside the desktop app, which "
+            "must not be written to. Copying the sidecar to HERMES_HOME/photon/sidecar failed (see the "
+            "[photon] warning in the log); make HERMES_HOME writable and retry.")
+
+
 def dir_writable(path: Path) -> bool:
     """True when we can create files in ``path`` (probe, not stat — stat lies on root-squash
     / read-only bind mounts)."""

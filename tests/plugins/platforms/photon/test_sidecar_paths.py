@@ -252,3 +252,60 @@ def test_mirror_of_the_shipped_sidecar_carries_every_module(tmp_path, monkeypatc
     assert "index.mjs" in shipped
     assert mirror != source
     assert shipped <= {p.name for p in mirror.glob("*.mjs")}
+
+
+def _sealed_bundle_sidecar(tmp_path, *, baked: bool) -> tuple[Path, Path]:
+    import json
+
+    bundle = tmp_path / "Hermes.app" / "Contents" / "Resources" / "agent-payload" / "hermes-agent"
+    source = bundle / "plugins" / "platforms" / "photon" / "sidecar"
+    _seed_source(source, with_node_modules=baked)
+    if baked:
+        (source / "node_modules" / "spectrum-ts").mkdir()
+    (bundle / "install-stamp.json").write_text(
+        json.dumps({"payload": "bundled", "distribution": "desktop-app"}), encoding="utf-8",
+    )
+    return bundle, source
+
+
+@pytest.mark.parametrize("baked", [True, False], ids=["baked-deps", "mirror-failed"])
+def test_install_sidecar_never_runs_npm_inside_a_sealed_bundle(tmp_path, monkeypatch, capsys, baked) -> None:
+    """`hermes photon setup` / `install-sidecar` install into the dir the resolver left. Inside a bundle that is
+    baked deps (nothing to do) or a failed mirror (say so): never npm or its error log inside the .app."""
+    import types
+    from plugins.platforms.photon import cli as photon_cli
+
+    bundle, source = _sealed_bundle_sidecar(tmp_path, baked=baked)
+    monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", source)
+    monkeypatch.setattr(sidecar_paths, "_NPM_ERROR_LOG", None)
+    monkeypatch.setattr(photon_cli, "find_node_executable", lambda _name: "/usr/bin/npm")
+    runs: list[tuple] = []
+
+    def _fake_run(cmd, **kw):
+        runs.append((cmd, kw.get("cwd")))
+        return types.SimpleNamespace(returncode=1, stderr="npm ERR! EPERM")
+
+    monkeypatch.setattr(photon_cli.subprocess, "run", _fake_run)
+    before = sorted(p.relative_to(bundle) for p in bundle.rglob("*"))
+
+    rc = photon_cli._install_sidecar()
+
+    assert runs == []
+    assert sorted(p.relative_to(bundle) for p in bundle.rglob("*")) == before
+    assert rc == (0 if baked else 1)
+    if not baked:
+        assert "HERMES_HOME" in capsys.readouterr().err
+
+
+def test_sealed_bundle_without_deps_reports_the_failed_mirror_not_an_in_bundle_install(tmp_path, monkeypatch) -> None:
+    """The gateway's refusal must not tell the user to run npm inside the desktop app."""
+    from plugins.platforms.photon import adapter as photon_adapter
+
+    _bundle, source = _sealed_bundle_sidecar(tmp_path, baked=False)
+    monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", source)
+
+    with pytest.raises(photon_adapter.PhotonSidecarStartupError) as excinfo:
+        photon_adapter._ensure_sidecar_deps_blocking()
+
+    assert "npm ci" not in str(excinfo.value)
+    assert "HERMES_HOME" in str(excinfo.value)
