@@ -12,7 +12,7 @@ import {
   PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
 } from '@/hermes'
 import { translateNow } from '@/i18n/runtime'
-import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText, type GatewayEventPayload, toChatMessages } from '@/lib/chat-messages'
 import { markReasoningEffortPending } from '@/lib/chat-runtime'
 import { type GuardedModelSwitchResult, surfaceModelSwitchConfirm } from '@/lib/guarded-model-switch'
 import { noteMessageSent } from '@/store/desktop-metrics'
@@ -39,7 +39,13 @@ import {
 import type { SessionResumeResult, SessionRuntimeInfo } from '@/types/hermes'
 
 import { refreshCronRunWriteGate } from '../../cron/open-cron-run'
-import { monotonicRevision } from '../../session/hooks/use-message-stream/utils'
+import { modelPickKey } from '../../session/hooks/model-pick-ledger'
+import {
+  fenceRuntimeSnapshotPatch,
+  sessionInfoStatePatch,
+  type SessionRuntimeStatePatch,
+  STALE_REVISION_PATCH_KEYS
+} from '../../session/hooks/use-message-stream/utils'
 import type { usePromptActions } from '../../session/hooks/use-prompt-actions'
 import { singleFlightSessionResume } from '../../session/hooks/use-prompt-actions/single-flight-resume'
 import { markSessionRecentlyInterrupted, withSessionNotFoundResume } from '../../session/hooks/use-prompt-actions/utils'
@@ -76,33 +82,32 @@ function tileRestScope(owner: SessionOwnerScope) {
     : owner
 }
 
-function tileResumeRuntimeFields(info: SessionRuntimeInfo | undefined, state: ClientSessionState) {
+/** The model, policy and revision fields a tile resume writes, fenced like `applyRuntimeInfo`. The pick
+ *  ledger key follows the tile's owner the way the tile's own `useModelControls` does (session-tile.tsx). */
+function tileResumeRuntimeFields(
+  info: SessionRuntimeInfo | undefined,
+  state: ClientSessionState,
+  runtimeId: string,
+  owner: SessionOwnerScope
+): SessionRuntimeStatePatch {
   if (!info) {
     return {}
   }
 
-  const incomingRev = typeof info.revision === 'number' ? info.revision : undefined
+  const patch = sessionInfoStatePatch(info as GatewayEventPayload)
+  const scope = tileRestScope(owner)
 
-  if (incomingRev !== undefined && state.revision !== undefined && incomingRev < state.revision) {
-    return {}
-  }
+  fenceRuntimeSnapshotPatch(
+    patch,
+    state,
+    scope && typeof scope === 'object'
+      ? modelPickKey(runtimeId, scope.connectionId, scope.profile)
+      : modelPickKey(runtimeId, null, scope)
+  )
 
-  const revision = monotonicRevision(state.revision, incomingRev)
-  const hasRoute = typeof info.model === 'string' || typeof info.provider === 'string'
-  const modelRevision = hasRoute ? monotonicRevision(state.modelRevision, incomingRev) : state.modelRevision
-
-  return {
-    ...(typeof info.fast === 'boolean' ? { fast: info.fast } : {}),
-    ...(typeof info.model === 'string' ? { model: info.model } : {}),
-    ...(typeof info.provider === 'string' ? { provider: info.provider } : {}),
-    ...(typeof info.reasoning_effort === 'string'
-      ? { reasoningEffort: info.reasoning_effort, reasoningEffortPending: false }
-      : {}),
-    ...(typeof info.reasoning_effort_wire === 'string' ? { reasoningEffortWire: info.reasoning_effort_wire } : {}),
-    ...(typeof info.service_tier === 'string' ? { serviceTier: info.service_tier } : {}),
-    ...(revision !== undefined ? { revision } : {}),
-    ...(modelRevision !== undefined ? { modelRevision } : {})
-  }
+  return Object.fromEntries(
+    STALE_REVISION_PATCH_KEYS.filter(key => patch[key] !== undefined).map(key => [key, patch[key]])
+  ) as SessionRuntimeStatePatch
 }
 
 /** A cached binding still carrying this session's transcript (or mid-turn). */
@@ -597,7 +602,7 @@ export function useSessionTileDelegate({
             return {
               // The deferred build reports the session's own effort later (#79807).
               ...markReasoningEffortPending(state),
-              ...tileResumeRuntimeFields(info, state),
+              ...tileResumeRuntimeFields(info, state, runtimeId, owner),
               awaitingResponse: running && !resumed.inflight?.assistant,
               busy: running,
               messages

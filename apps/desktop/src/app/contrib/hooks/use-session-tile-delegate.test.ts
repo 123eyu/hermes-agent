@@ -13,6 +13,7 @@ import { $activeSessionId, setSessionOwnerHint, setSessions } from '@/store/sess
 import { $sessionTiles, sessionTileDelegate } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
 
+import { beginModelPick, modelPickKey, settleModelPick } from '../../session/hooks/model-pick-ledger'
 import {
   clearSingleFlightSessionResumeState,
   singleFlightSessionResume
@@ -1261,5 +1262,73 @@ describe('resumeTile revision fence', () => {
       revision: 7
     })
     expect(states.current.get('runtime-stale-resume')?.messages).toHaveLength(1)
+  })
+
+  it('keeps an in-flight tile pick painted when a replay-gap resume answers with the pre-pick route', async () => {
+    setSessions([row({ id: 'stored-pick-resume', profile: 'default' })])
+    const routeA = { model: 'model-a', provider: 'provider-a' }
+    const routeB = { model: 'model-b', provider: 'provider-b' }
+    const composerSelection = { ...routeA, source: 'default' as const }
+
+    // The tile's own pick of B from A@5 is still in flight (session-tile keys it by its owner route).
+    const pickKey = modelPickKey('runtime-pick-resume', undefined, undefined)
+
+    const token = beginModelPick(
+      pickKey,
+      { composerSelection, ...routeA, reasoningEffortWire: 'high' },
+      { composerSelection, ...routeB, reasoningEffortWire: '' },
+      5
+    )
+
+    const paintedB = {
+      ...createClientSessionState('stored-pick-resume', []),
+      ...routeB,
+      modelRevision: 5,
+      reasoningEffort: 'high',
+      reasoningEffortWire: '',
+      revision: 5
+    }
+
+    const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-pick-resume', 'runtime-pick-resume']]) }
+
+    const states = {
+      current: new Map<string, ReturnType<typeof createClientSessionState>>([['runtime-pick-resume', paintedB]])
+    }
+
+    const update = vi.fn(
+      (
+        id: string,
+        updater: (state: ReturnType<typeof createClientSessionState>) => ReturnType<typeof createClientSessionState>
+      ) => {
+        const next = updater(states.current.get(id) ?? createClientSessionState('stored-pick-resume', []))
+        states.current.set(id, next)
+
+        return next
+      }
+    )
+
+    $sessionTiles.set([{ runtimeId: 'runtime-pick-resume', storedSessionId: 'stored-pick-resume' }] as never)
+    vi.mocked(requestGatewayForProfile).mockResolvedValueOnce({
+      info: { ...routeA, reasoning_effort: 'high', reasoning_effort_wire: 'high', revision: 5 },
+      messages: [{ content: 'persisted reply', role: 'assistant' }],
+      resumed: 'stored-pick-resume',
+      running: false,
+      session_id: 'runtime-pick-resume'
+    } as never)
+
+    renderTile(vi.fn() as never, {
+      runtimeIdByStoredSessionIdRef,
+      sessionStateByRuntimeIdRef: states as never,
+      updateSessionState: update as never
+    })
+
+    try {
+      await sessionTileDelegate()!.resumeTile('stored-pick-resume', { authoritativeSnapshot: true })
+
+      expect(states.current.get('runtime-pick-resume')).toMatchObject({ ...routeB, revision: 5 })
+      expect(states.current.get('runtime-pick-resume')?.messages).toHaveLength(1)
+    } finally {
+      settleModelPick(pickKey, token, true)
+    }
   })
 })
