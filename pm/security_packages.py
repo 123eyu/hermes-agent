@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import subprocess
 import tempfile
@@ -12,7 +13,7 @@ from pm import paths
 from pm.filesystem import native
 from pm.lock import Lockfile
 from pm.package import InstallError
-from pm.packages import BinaryPackage, _RUST_TRIPLE
+from pm.packages import BinaryPackage, _RUST_TRIPLE, stage_python_vcruntime
 from pm.registry import register
 from pm.store import MUSL_TARGETS, flatten_single_dir
 
@@ -21,8 +22,14 @@ from pm.store import MUSL_TARGETS, flatten_single_dir
 class Bws(BinaryPackage):
     name = "bws"
     optional = True
+    # Both Windows bws.exe builds (x64 and ARM64) import VCRUNTIME140.dll dynamically.
+    deps = ("python",)
     binary_rel = {"posix": "bws", "win32": "bws.exe"}
     gaps = {"linux-arm64-bionic": "upstream does not ship an Android binary"}
+
+    def _probe_env(self) -> dict:
+        # python is only a staging-time DLL source; keep it off PATH so the smoke probe cannot borrow its DLL.
+        return dict(os.environ)
 
     def fetch_url(self, version: str, target: str) -> str:
         # The static musl build runs on glibc too. One portable Linux artifact
@@ -36,6 +43,16 @@ class Bws(BinaryPackage):
         binary = self.binary(staged, target)
         if binary is not None and binary.is_file():
             binary.chmod(0o755)
+        if target.startswith("win32"):
+            stage_python_vcruntime(self.name, store, staged, target)
+
+    def verify(self, entry: Path, target: str) -> str:
+        reason = super().verify(entry, target)
+        if reason or not target.startswith("win32"):
+            return reason
+        if not (entry / "vcruntime140.dll").is_file():
+            return "vcruntime140.dll is missing beside bws.exe"
+        return ""
 
 
 class _SignedBinary(BinaryPackage):

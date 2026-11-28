@@ -35,3 +35,10 @@ def test_arm64_windows_ripgrep_stages_pythons_vc_runtime_beside_rg(tmp_path, mon
 def test_python_installs_before_ripgrep_so_staging_can_read_it():
     order = [package.name for package in walk(["ripgrep"])]
     assert order.index("python") < order.index("ripgrep")
+
+
+def test_arm64_windows_ripgrep_verify_rejects_entry_missing_vcruntime(tmp_path):
+    entry = tmp_path / "rg-entry"
+    entry.mkdir()
+    (entry / "rg.exe").write_bytes(b"MZ" + bytes(58) + (64).to_bytes(4, "little") + b"PE\0\0" + (0xAA64).to_bytes(2, "little"))
+    assert "vcruntime140.dll" in get_package("ripgrep").verify(entry, "win32-arm64")

@@ -1066,6 +1066,29 @@ class Ffmpeg(_BionicDebArm, BinaryPackage, DebPackage):
         return martin_riedl_versions(target)
 
 
+def stage_python_vcruntime(package_name: str, store: Store, staged: Path, target: str) -> None:
+    """Copy target's vcruntime140.dll from the pinned Python entry into ``staged``."""
+    from pm.install import _installed_location, _lockfile
+    from pm.registry import get_package
+
+    python = get_package("python")
+    lockfile = _lockfile()
+    location = _installed_location(python, lockfile, target)
+    if location is None and lockfile is not None:
+        location = _installed_location(python, lockfile, target, roots=(store.root,))
+    fact = location[0].get("python") if location is not None else None
+    if fact is None:
+        raise InstallError(
+            package_name,
+            f"{target} {package_name} needs vcruntime140.dll from python, which is not installed",
+        )
+    runtime = location[1].entry(fact["entry"]) / "vcruntime140.dll"
+    if not runtime.is_file():
+        raise InstallError(package_name, f"python's entry has no {runtime.name}")
+    # App-local copy: the Windows loader searches the exe's folder first, and the entry digest covers it.
+    shutil.copy2(runtime, staged / runtime.name)
+
+
 @register
 class Ripgrep(BinaryPackage):
     name = "ripgrep"
@@ -1077,27 +1100,18 @@ class Ripgrep(BinaryPackage):
 
     def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
         super().stage(store, staged, version, target)
-        if target != "win32-arm64":
-            return
-        from pm.install import _installed_location, _lockfile
-        from pm.registry import get_package
-
-        python = get_package("python")
-        location = _installed_location(python, _lockfile(), target)
-        fact = location[0].get("python") if location is not None else None
-        if fact is None:
-            raise InstallError(self.name, "ARM64 rg.exe needs vcruntime140.dll from python, which is not installed")
-        runtime = location[1].entry(fact["entry"]) / "vcruntime140.dll"
-        if not runtime.is_file():
-            raise InstallError(self.name, f"python's entry has no {runtime.name}")
-        # App-local copy: the loader searches the exe's own folder first, and
-        # the entry digest is recorded over it.
-        shutil.copy2(runtime, staged / runtime.name)
+        if target == "win32-arm64":
+            stage_python_vcruntime(self.name, store, staged, target)
 
     def verify(self, entry: Path, target: str) -> str:
         if target == "linux-arm64-bionic":
             return Package.verify(self, entry, target)
-        return super().verify(entry, target)
+        reason = super().verify(entry, target)
+        if reason or target != "win32-arm64":
+            return reason
+        if not (entry / "vcruntime140.dll").is_file():
+            return "vcruntime140.dll is missing beside rg.exe"
+        return ""
 
     def fetch_url(self, version: str, target: str) -> str:
         if target == "linux-arm64-bionic":

@@ -21,13 +21,31 @@ from tests.pm._range_server import dl_server as dl_server  # noqa: PLC0414 -- th
 
 @pytest.fixture
 def consumer_store(tmp_path, monkeypatch, dl_server):
+    from pm.lock import Facts
+    from pm.store import tree_digest
+
+    store_dir = tmp_path / "store"
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "store"))
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(store_dir))
     monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
-    monkeypatch.setattr(paths, "lockfile_path", lambda: tmp_path / "lock.json")
+    lock_path = tmp_path / "lock.json"
+    monkeypatch.setattr(paths, "lockfile_path", lambda: lock_path)
     # Only the already-prepared interpreter is supplied: the worker, downloader,
     # extractor, probes, publication and read-only selector are all real.
+    target = pm.current_target()
+    py_entry = store_dir / "python-3.14.9"
+    py_bin = py_entry / "bin" / "python3"
+    py_bin.parent.mkdir(parents=True)
+    py_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+    py_bin.chmod(0o755)
+    lock = pm.Lockfile(lock_path)
+    lock.set_pin("python", "3.14.9", {target: [{"url": "https://example.invalid/python.tar.gz", "sha256": "1" * 64}]})
+    lock.save()
+    Facts(store_dir / "facts.json").record(
+        "python", "3.14.9", py_entry.name, {"PATH": [str(py_bin.parent)]}, store_dir,
+        target=target, artifacts=["1" * 64], digest=tree_digest(py_entry),
+    )
     monkeypatch.setattr("pm.runtime.runtime_python", lambda **kwargs: Path(sys.executable))
     monkeypatch.setattr("urllib.request.urlopen", lambda *a, **kw: pytest.fail("consumer bypassed PM acquisition"))
     return dl_server
