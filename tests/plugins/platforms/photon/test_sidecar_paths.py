@@ -233,3 +233,22 @@ def test_sealed_bundle_with_baked_deps_runs_in_place_without_creating_lock(tmp_p
 
     assert not (source / ".photon-install.lock").exists()
     assert not (source / ".hermes-write-probe").exists()
+
+
+def test_mirror_of_the_shipped_sidecar_carries_every_module(tmp_path, monkeypatch) -> None:
+    """index.mjs imports its sibling modules at load, so a mirror missing one can't start the sidecar (#85046).
+    Mirrors a copy of the real sidecar tree, not a fixture built from the mirror list."""
+    import shutil
+
+    monkeypatch.delenv("PHOTON_SIDECAR_DIR", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    source = tmp_path / "src"
+    shutil.copytree(sidecar_paths.SOURCE_SIDECAR_DIR, source, ignore=shutil.ignore_patterns("node_modules"))
+    _freeze_writability(monkeypatch, writable=False)
+
+    mirror = sidecar_paths.resolve_sidecar_dir(source)
+
+    shipped = {p.name for p in source.glob("*.mjs")}
+    assert "index.mjs" in shipped
+    assert mirror != source
+    assert shipped <= {p.name for p in mirror.glob("*.mjs")}
